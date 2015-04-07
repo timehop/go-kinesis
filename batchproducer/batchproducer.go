@@ -63,14 +63,17 @@ type BatchingKinesisClient interface {
 	PutRecords(args *kinesis.RequestArgs) (resp *kinesis.PutRecordsResp, err error)
 }
 
-// NewBatchProducer creates and returns a BatchProducer.
-// The BatchProducer that is returned will flush a batch to Kinesis whenever either
+// New creates and returns a BatchProducer that will do nothing until its Start method is called.
+// Once it is started, it will flush a batch to Kinesis whenever either
 // the flushInterval occurs (if flushInterval > 0) or the batchSize is reached,
-// whichever happens first. If the number of records in the buffer is equal to
-// or greater than bufferSize then the Add method will block.
+// whichever happens first.
+// `bufferSize` is the size of the buffer that stores records before they are sent to the Kinesis
+// stream. If the number of records in the buffer is equal to or greater than bufferSize then the
+// Add method will block.
+// `batchSize` is the max number of records in each batch request sent to Kinesis.
 // TODO: this is too many args. Maybe instead have some defaults and add some setter methods for the less critical
 // params
-func NewBatchProducer(
+func New(
 	client BatchingKinesisClient,
 	streamName string,
 	bufferSize int,

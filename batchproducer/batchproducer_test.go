@@ -19,7 +19,7 @@ var (
 
 func TestNewBatchProducerWithGoodValues(t *testing.T) {
 	t.Parallel()
-	b, err := NewBatchProducer(&mockBatchingClient{}, "foo", 10, 0, 10, discardLogger)
+	b, err := New(&mockBatchingClient{}, "foo", 10, 0, 10, discardLogger)
 	if b == nil {
 		t.Error("b == nil")
 	}
@@ -30,7 +30,7 @@ func TestNewBatchProducerWithGoodValues(t *testing.T) {
 
 func TestNewBatchProducerWithBadBatchSize(t *testing.T) {
 	t.Parallel()
-	b, err := NewBatchProducer(&mockBatchingClient{}, "foo", 10000, 0, 1000, discardLogger)
+	b, err := New(&mockBatchingClient{}, "foo", 10000, 0, 1000, discardLogger)
 	if b != nil {
 		t.Errorf("%q != nil", b)
 	}
@@ -44,7 +44,7 @@ func TestNewBatchProducerWithBadBatchSize(t *testing.T) {
 
 func TestNewBatchProducerWithBadValues(t *testing.T) {
 	t.Parallel()
-	b, err := NewBatchProducer(&mockBatchingClient{}, "foo", 10, 0, 500, discardLogger)
+	b, err := New(&mockBatchingClient{}, "foo", 10, 0, 500, discardLogger)
 	if b != nil {
 		t.Errorf("%q != nil", b)
 	}
@@ -58,7 +58,7 @@ func TestNewBatchProducerWithBadValues(t *testing.T) {
 
 func TestAddRecordWhenStarted(t *testing.T) {
 	t.Parallel()
-	b, err := NewBatchProducer(&mockBatchingClient{}, "foo", 100, 0, 10, discardLogger)
+	b, err := New(&mockBatchingClient{}, "foo", 100, 0, 10, discardLogger)
 	if err != nil {
 		t.Fatalf("%v != nil", err)
 	}
@@ -74,7 +74,7 @@ func TestAddRecordWhenStarted(t *testing.T) {
 
 func TestAddRecordWhenStopped(t *testing.T) {
 	t.Parallel()
-	b, err := NewBatchProducer(&mockBatchingClient{}, "foo", 100, 0, 10, discardLogger)
+	b, err := New(&mockBatchingClient{}, "foo", 100, 0, 10, discardLogger)
 	if err != nil {
 		t.Fatalf("%v != nil", err)
 	}
@@ -88,7 +88,7 @@ func TestAddRecordWhenStopped(t *testing.T) {
 func TestFlushInterval(t *testing.T) {
 	t.Parallel()
 	c := &mockBatchingClient{}
-	b := newBatchProducer(c, 100, 2*time.Millisecond, 10)
+	b := newProducer(c, 100, 2*time.Millisecond, 10)
 	b.Start()
 	defer b.Stop()
 
@@ -121,7 +121,7 @@ func TestFlushInterval(t *testing.T) {
 func TestBatchSize(t *testing.T) {
 	t.Parallel()
 	c := &mockBatchingClient{}
-	b := newBatchProducer(c, 100, 0, 5)
+	b := newProducer(c, 100, 0, 5)
 	b.Start()
 	defer b.Stop()
 
@@ -161,7 +161,7 @@ func TestBatchSize(t *testing.T) {
 func TestBatchError(t *testing.T) {
 	t.Parallel()
 	c := &mockBatchingClient{shouldErr: true}
-	b := newBatchProducer(c, 100, 0, 5)
+	b := newProducer(c, 100, 0, 5)
 	b.Start()
 	defer b.Stop()
 
@@ -206,7 +206,7 @@ func TestBatchError(t *testing.T) {
 
 func TestBatchPartialFailure(t *testing.T) {
 	t.Parallel()
-	b := newBatchProducer(&mockBatchingClient{}, 100, 0, 20)
+	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
 	b.maxAttemptsPerRecord = 2
 	b.Start()
 	defer b.Stop()
@@ -236,7 +236,7 @@ func TestBufferSizeStat(t *testing.T) {
 
 	sr := &statReceiver{}
 
-	b := newBatchProducer(&mockBatchingClient{}, 100, 0, 20)
+	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
 	b.statReceiver = sr
 	b.statInterval = 1 * time.Millisecond
 	b.Start()
@@ -272,7 +272,7 @@ func TestSuccessfulRecordsStat(t *testing.T) {
 	t.Parallel()
 
 	sr := &statReceiver{}
-	b := newBatchProducer(&mockBatchingClient{}, 100, 0, 20)
+	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
 	b.statReceiver = sr
 	b.statInterval = 1 * time.Millisecond
 	// b.logger = stdoutLogger // TEMP TEMP TEMP
@@ -308,7 +308,7 @@ func TestSuccessfulRecordsStatWhenSomeRecordsFail(t *testing.T) {
 	t.Parallel()
 
 	sr := &statReceiver{}
-	b := newBatchProducer(&mockBatchingClient{}, 100, 0, 20)
+	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
 	b.statReceiver = sr
 	b.statInterval = 1 * time.Millisecond
 	b.maxAttemptsPerRecord = 2
@@ -334,7 +334,7 @@ func TestRecordsDroppedStatWhenSomeRecordsFail(t *testing.T) {
 	t.Parallel()
 
 	sr := &statReceiver{}
-	b := newBatchProducer(&mockBatchingClient{}, 100, 0, 20)
+	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
 	b.statReceiver = sr
 	b.statInterval = 1 * time.Millisecond
 	b.maxAttemptsPerRecord = 1
@@ -360,7 +360,7 @@ func TestSuccessfulRecordsStatWhenKinesisReturnsError(t *testing.T) {
 	t.Parallel()
 
 	sr := &statReceiver{}
-	b := newBatchProducer(&mockBatchingClient{shouldErr: true}, 100, 0, 20)
+	b := newProducer(&mockBatchingClient{shouldErr: true}, 100, 0, 20)
 	b.statReceiver = sr
 	b.statInterval = 1 * time.Millisecond
 	b.Start()
@@ -383,7 +383,7 @@ func TestKinesisErrorsStatWhenKinesisSucceeds(t *testing.T) {
 	t.Parallel()
 
 	sr := &statReceiver{}
-	b := newBatchProducer(&mockBatchingClient{shouldErr: false}, 100, 0, 20)
+	b := newProducer(&mockBatchingClient{shouldErr: false}, 100, 0, 20)
 	b.statReceiver = sr
 	b.statInterval = 1 * time.Millisecond
 	b.Start()
@@ -406,7 +406,7 @@ func TestKinesisErrorsStatWhenKinesisReturnsError(t *testing.T) {
 	t.Parallel()
 
 	sr := &statReceiver{}
-	b := newBatchProducer(&mockBatchingClient{shouldErr: true}, 100, 0, 20)
+	b := newProducer(&mockBatchingClient{shouldErr: true}, 100, 0, 20)
 	b.statReceiver = sr
 	b.statInterval = 1 * time.Millisecond
 	b.Start()
@@ -447,7 +447,7 @@ func (s *mockBatchingClient) PutRecords(args *kinesis.RequestArgs) (resp *kinesi
 	return &res, nil
 }
 
-func newBatchProducer(client *mockBatchingClient, bufferSize int, flushInterval time.Duration, batchSize int) *batchProducer {
+func newProducer(client *mockBatchingClient, bufferSize int, flushInterval time.Duration, batchSize int) *batchProducer {
 	batchProducer := batchProducer{
 		client:               client,
 		streamName:           "foo",
