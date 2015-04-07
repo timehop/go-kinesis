@@ -15,11 +15,17 @@ import (
 type BatchProducer interface {
 	// Start starts the main goroutine. No need to call it using `go`.
 	Start() error
+
+	// Stop signals the main goroutine to finish. Once this is called, Add will immediately start
+	// returning errors (unless and until Start is called again). Stop will block until
+	// all remaining records in the buffer have been sent.
 	Stop() error
 
 	// Add might block if the BatchProducer has a buffer and the buffer is full.
 	// In order to prevent filling the buffer and eventually blocking indefinitely,
-	// Add will fail and return an error if the BatchProducer is not started.
+	// Add will fail and return an error if the BatchProducer is stopped or stopping. Note
+	// that it’s critical to check the return value because the BatchProducer could have
+	// died in the background due to a panic (or something).
 	Add(data []byte, partitionKey string) error
 
 	// Setters
@@ -157,6 +163,9 @@ func (b *batchProducer) run() {
 	}
 
 	b.setRunning(true)
+	// Very important to defer the call to b.setRunning(false) — not just so it’s accurate
+	// after b.Stop has been called but also just in case this main goroutine dies in the
+	// background — for example because of a panic.
 	defer b.setRunning(false)
 
 	for {
@@ -179,6 +188,7 @@ func (b *batchProducer) run() {
 
 // from/for interface BatchProducer
 func (b *batchProducer) Stop() error {
+	// TODO: Immediately stop accepting new records by Add, then block until all the records in the buffer have been sent
 	if b.isRunning() {
 		b.stop <- true
 	}
