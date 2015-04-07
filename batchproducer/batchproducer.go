@@ -3,6 +3,7 @@ package batchproducer
 import (
 	"errors"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/timehop/go-kinesis"
@@ -107,6 +108,7 @@ type batchProducer struct {
 	maxAttemptsPerRecord int
 	logger               *log.Logger
 	running              bool
+	runningMu            sync.Mutex
 	consecutiveErrors    int
 	currentDelay         time.Duration
 	statInterval         time.Duration
@@ -124,7 +126,7 @@ type batchRecord struct {
 
 // from/for interface BatchProducer
 func (b *batchProducer) Add(data []byte, partitionKey string) error {
-	if !b.running {
+	if !b.isRunning() {
 		return errors.New("Cannot call Add when BatchProducer is not running (to prevent the buffer filling up and Add blocking indefinitely).")
 	}
 	b.records <- batchRecord{data: data, partitionKey: partitionKey}
@@ -133,15 +135,14 @@ func (b *batchProducer) Add(data []byte, partitionKey string) error {
 
 // from/for interface BatchProducer
 func (b *batchProducer) Start() error {
-	if b.running {
+	if b.isRunning() {
 		return nil
 	}
 
 	go b.run()
 
-	for !b.running {
-		// Give the goroutine a chance to start before returning.
-		time.Sleep(1 * time.Microsecond)
+	for !b.isRunning() {
+		time.Sleep(1 * time.Millisecond)
 	}
 
 	return nil
@@ -155,8 +156,8 @@ func (b *batchProducer) run() {
 		statTick = time.Tick(b.statInterval)
 	}
 
-	b.running = true
-	defer func() { b.running = false }()
+	b.setRunning(true)
+	defer b.setRunning(false)
 
 	for {
 		select {
@@ -178,14 +179,14 @@ func (b *batchProducer) run() {
 
 // from/for interface BatchProducer
 func (b *batchProducer) Stop() error {
-	if b.running {
+	if b.isRunning() {
 		b.stop <- true
 	}
 	return nil
 }
 
 func (b *batchProducer) SetMaxAttemptsPerRecord(v int) error {
-	if b.running {
+	if b.isRunning() {
 		return errors.New("Cannot set max attempts per record while BatchProducer is running.")
 	}
 	b.maxAttemptsPerRecord = v
@@ -193,7 +194,7 @@ func (b *batchProducer) SetMaxAttemptsPerRecord(v int) error {
 }
 
 func (b *batchProducer) SetStatReceiver(sr BatchStatReceiver) error {
-	if b.running {
+	if b.isRunning() {
 		return errors.New("Cannot set BatchStatReceiver while BatchProducer is running.")
 	}
 	b.statReceiver = sr
@@ -201,11 +202,23 @@ func (b *batchProducer) SetStatReceiver(sr BatchStatReceiver) error {
 }
 
 func (b *batchProducer) SetStatInterval(si time.Duration) error {
-	if b.running {
+	if b.isRunning() {
 		return errors.New("Cannot set stat interval while BatchProducer is running.")
 	}
 	b.statInterval = si
 	return nil
+}
+
+func (b *batchProducer) setRunning(running bool) {
+	b.runningMu.Lock()
+	defer b.runningMu.Unlock()
+	b.running = running
+}
+
+func (b *batchProducer) isRunning() bool {
+	b.runningMu.Lock()
+	defer b.runningMu.Unlock()
+	return b.running
 }
 
 func (b *batchProducer) sendBatch() {
