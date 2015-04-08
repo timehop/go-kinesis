@@ -171,9 +171,6 @@ func (b *batchProducer) run() {
 	}
 
 	b.setRunning(true)
-	// Very important to defer the call to b.setRunning(false) — not just so it’s accurate
-	// after b.Stop has been called but also just in case this main goroutine dies in the
-	// background — for example because of a panic.
 	defer b.setRunning(false)
 
 	for {
