@@ -9,10 +9,10 @@ import (
 	"github.com/timehop/go-kinesis"
 )
 
-// BatchProducer collects records individually and then sends them to Kinesis in
+// Producer collects records individually and then sends them to Kinesis in
 // batches in the background using PutRecords, with retries.
-// A BatchProducer will do nothing until Start is called.
-type BatchProducer interface {
+// A Producer will do nothing until Start is called.
+type Producer interface {
 	// Start starts the main goroutine. No need to call it using `go`.
 	Start() error
 
@@ -30,7 +30,7 @@ type BatchProducer interface {
 
 	// Setters
 	SetMaxAttemptsPerRecord(int) error
-	SetStatReceiver(BatchStatReceiver) error
+	SetStatReceiver(StatReceiver) error
 
 	// This interval will be used to make a *best effort* attempt to send stats *approximately*
 	// when this interval elapses. There’s no guarantee, however, since the main goroutine is
@@ -38,17 +38,17 @@ type BatchProducer interface {
 	SetStatInterval(time.Duration) error
 }
 
-// BatchStatReceiver defines an object that can accept stats.
-type BatchStatReceiver interface {
-	// Receive will be called by the main BatchProducer goroutine so it will block all batches from being
+// StatReceiver defines an object that can accept stats.
+type StatReceiver interface {
+	// Receive will be called by the main Producer goroutine so it will block all batches from being
 	// sent, so make sure it is either very fast or never blocks at all!
-	Receive(BatchStat)
+	Receive(StatsFrame)
 }
 
-// BatchStat is a kind of a snapshot of activity and happenings. Some of its fields represent
-// "moment-in-time" values e.g. BufferSize is the size of the buffer at the moment the Stat is
-// sent. Other fields are cumulative since the last Stat, i.e. ErrorsSinceLastStat.
-type BatchStat struct {
+// StatsFrame is a kind of a snapshot of activity and happenings. Some of its fields represent
+// "moment-in-time" values e.g. BufferSize is the size of the buffer at the moment the StatsFrame
+// is sent. Other fields are cumulative since the last StatsFrame, i.e. ErrorsSinceLastStat.
+type StatsFrame struct {
 	// Moment-in-time stats
 	BufferSize int
 
@@ -80,7 +80,7 @@ func New(
 	flushInterval time.Duration,
 	batchSize int,
 	logger *log.Logger,
-) (BatchProducer, error) {
+) (Producer, error) {
 	if batchSize < 1 || batchSize > 500 {
 		return nil, errors.New("batchSize must be between 1 and 500 inclusive")
 	}
@@ -101,7 +101,7 @@ func New(
 		maxAttemptsPerRecord: 10,
 		logger:               logger,
 		statInterval:         time.Second,
-		currentStat:          new(BatchStat),
+		currentStat:          new(StatsFrame),
 		records:              make(chan batchRecord, bufferSize),
 		stop:                 make(chan interface{}),
 	}
@@ -121,8 +121,8 @@ type batchProducer struct {
 	consecutiveErrors    int
 	currentDelay         time.Duration
 	statInterval         time.Duration
-	statReceiver         BatchStatReceiver
-	currentStat          *BatchStat
+	statReceiver         StatReceiver
+	currentStat          *StatsFrame
 	records              chan batchRecord
 	stop                 chan interface{}
 }
@@ -202,15 +202,15 @@ func (b *batchProducer) Stop() error {
 
 func (b *batchProducer) SetMaxAttemptsPerRecord(v int) error {
 	if b.isRunning() {
-		return errors.New("Cannot set max attempts per record while BatchProducer is running.")
+		return errors.New("Cannot set max attempts per record while Producer is running.")
 	}
 	b.maxAttemptsPerRecord = v
 	return nil
 }
 
-func (b *batchProducer) SetStatReceiver(sr BatchStatReceiver) error {
+func (b *batchProducer) SetStatReceiver(sr StatReceiver) error {
 	if b.isRunning() {
-		return errors.New("Cannot set BatchStatReceiver while BatchProducer is running.")
+		return errors.New("Cannot set StatReceiver while Producer is running.")
 	}
 	b.statReceiver = sr
 	return nil
@@ -218,7 +218,7 @@ func (b *batchProducer) SetStatReceiver(sr BatchStatReceiver) error {
 
 func (b *batchProducer) SetStatInterval(si time.Duration) error {
 	if b.isRunning() {
-		return errors.New("Cannot set stat interval while BatchProducer is running.")
+		return errors.New("Cannot set stat interval while Producer is running.")
 	}
 	b.statInterval = si
 	return nil
@@ -336,5 +336,5 @@ func (b *batchProducer) sendStats() {
 	// the provider of the BatchStatReceiver must ensure that it is either very fast or non-blocking.
 	b.statReceiver.Receive(*b.currentStat)
 
-	b.currentStat = new(BatchStat)
+	b.currentStat = new(StatsFrame)
 }

@@ -455,7 +455,7 @@ func newProducer(client *mockBatchingClient, bufferSize int, flushInterval time.
 		batchSize:            batchSize,
 		maxAttemptsPerRecord: 2,
 		logger:               discardLogger,
-		currentStat:          new(BatchStat),
+		currentStat:          new(StatsFrame),
 		records:              make(chan batchRecord, bufferSize),
 		stop:                 make(chan interface{}),
 	}
@@ -484,15 +484,15 @@ func (b *batchProducer) addRecordsAndWait(numRecords int, millisToWait int) {
 }
 
 type statReceiver struct {
-	stats                            []BatchStat
+	stats                            []StatsFrame
 	totalKinesisErrorsSinceLastStat  int
 	totalRecordsSentSuccessfully     int
 	totalRecordsDroppedSinceLastStat int
 }
 
-func (s *statReceiver) Receive(bs BatchStat) {
-	s.stats = append(s.stats, bs)
-	s.totalKinesisErrorsSinceLastStat += bs.KinesisErrorsSinceLastStat
-	s.totalRecordsSentSuccessfully += bs.RecordsSentSuccessfullySinceLastStat
-	s.totalRecordsDroppedSinceLastStat += bs.RecordsDroppedSinceLastStat
+func (s *statReceiver) Receive(sf StatsFrame) {
+	s.stats = append(s.stats, sf)
+	s.totalKinesisErrorsSinceLastStat += sf.KinesisErrorsSinceLastStat
+	s.totalRecordsSentSuccessfully += sf.RecordsSentSuccessfullySinceLastStat
+	s.totalRecordsDroppedSinceLastStat += sf.RecordsDroppedSinceLastStat
 }
