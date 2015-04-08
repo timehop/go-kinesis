@@ -241,6 +241,7 @@ func (b *batchProducer) sendBatch() {
 		return
 	}
 
+	// In the future, maybe this could be a RetryPolicy or something
 	if b.consecutiveErrors == 1 {
 		b.currentDelay = 50 * time.Millisecond
 	} else if b.consecutiveErrors > 1 {
@@ -330,9 +331,6 @@ func (b *batchProducer) returnSomeFailedRecordsToBuffer(res *kinesis.PutRecordsR
 
 func (b *batchProducer) sendStats() {
 	b.currentStat.BufferSize = len(b.records)
-
-	// TEMP TMEP TEMP
-	// fmt.Printf("Sending stat: %+v\n", b.currentStat)
 
 	// I considered running this as a goroutine, but I’m concerned about leaks. So instead, for now,
 	// the provider of the BatchStatReceiver must ensure that it is either very fast or non-blocking.
