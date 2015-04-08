@@ -42,13 +42,13 @@ type Producer interface {
 type StatReceiver interface {
 	// Receive will be called by the main Producer goroutine so it will block all batches from being
 	// sent, so make sure it is either very fast or never blocks at all!
-	Receive(StatsFrame)
+	Receive(StatsBatch)
 }
 
-// StatsFrame is a kind of a snapshot of activity and happenings. Some of its fields represent
-// "moment-in-time" values e.g. BufferSize is the size of the buffer at the moment the StatsFrame
-// is sent. Other fields are cumulative since the last StatsFrame, i.e. ErrorsSinceLastStat.
-type StatsFrame struct {
+// StatsBatch is a kind of a snapshot of activity and happenings. Some of its fields represent
+// "moment-in-time" values e.g. BufferSize is the size of the buffer at the moment the StatsBatch
+// is sent. Other fields are cumulative since the last StatsBatch, i.e. ErrorsSinceLastStat.
+type StatsBatch struct {
 	// Moment-in-time stats
 	BufferSize int
 
@@ -101,7 +101,7 @@ func New(
 		maxAttemptsPerRecord: 10,
 		logger:               logger,
 		statInterval:         time.Second,
-		currentStat:          new(StatsFrame),
+		currentStat:          new(StatsBatch),
 		records:              make(chan batchRecord, bufferSize),
 		stop:                 make(chan interface{}),
 	}
@@ -122,7 +122,7 @@ type batchProducer struct {
 	currentDelay         time.Duration
 	statInterval         time.Duration
 	statReceiver         StatReceiver
-	currentStat          *StatsFrame
+	currentStat          *StatsBatch
 	records              chan batchRecord
 	stop                 chan interface{}
 }
@@ -336,5 +336,5 @@ func (b *batchProducer) sendStats() {
 	// the provider of the BatchStatReceiver must ensure that it is either very fast or non-blocking.
 	b.statReceiver.Receive(*b.currentStat)
 
-	b.currentStat = new(StatsFrame)
+	b.currentStat = new(StatsBatch)
 }
