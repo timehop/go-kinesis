@@ -158,11 +158,16 @@ func (b *batchProducer) Start() error {
 }
 
 func (b *batchProducer) run() {
-	flushTick := time.Tick(b.flushInterval)
+	flushTicker := &time.Ticker{}
+	if b.flushInterval > 0 {
+		flushTicker = time.NewTicker(b.flushInterval)
+		defer flushTicker.Stop()
+	}
 
-	var statTick <-chan time.Time
-	if b.statReceiver != nil {
-		statTick = time.Tick(b.statInterval)
+	statTicker := &time.Ticker{}
+	if b.statReceiver != nil && b.statInterval > 0 {
+		statTicker = time.NewTicker(b.statInterval)
+		defer statTicker.Stop()
 	}
 
 	b.setRunning(true)
@@ -173,9 +178,9 @@ func (b *batchProducer) run() {
 
 	for {
 		select {
-		case <-flushTick:
+		case <-flushTicker.C:
 			b.sendBatch()
-		case <-statTick:
+		case <-statTicker.C:
 			b.sendStats()
 		case <-b.stop:
 			break
