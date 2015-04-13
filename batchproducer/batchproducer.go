@@ -321,8 +321,8 @@ func (b *batchProducer) returnSomeFailedRecordsToBuffer(res *kinesis.PutRecordsR
 				b.records <- record
 			} else {
 				b.currentStat.RecordsDroppedSinceLastStat++
-				msg := "NOT re-enqueueing failed record for retry, as it has hit %v attempts, " +
-					"which is the maximum. Error code was: '%v' and message was '%v'"
+				msg := "Dropping failed record; it has hit %v attempts " +
+					"which is the maximum. Error code was: '%v' and message was '%v'."
 				b.logger.Printf(msg, record.sendAttempts, result.ErrorCode, result.ErrorMessage)
 			}
 		}
