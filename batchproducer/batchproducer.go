@@ -261,17 +261,20 @@ func (b *batchProducer) sendBatch() {
 		b.currentStat.KinesisErrorsSinceLastStat++
 		b.logger.Printf("Error occurred when sending PutRecords request to Kinesis stream %v: %v", b.streamName, err)
 		b.returnRecordsToBuffer(records)
+		return
+	}
+
+	b.consecutiveErrors = 0
+	b.currentDelay = 0
+	succeeded := len(records) - res.FailedRecordCount
+
+	b.currentStat.RecordsSentSuccessfullySinceLastStat += succeeded
+
+	if res.FailedRecordCount == 0 {
+		b.logger.Printf("PutRecords request succeeded: sent %v records to Kinesis stream %v", succeeded, b.streamName)
 	} else {
-		b.consecutiveErrors = 0
-		b.currentDelay = 0
-		succeeded := len(records) - res.FailedRecordCount
-
-		b.currentStat.RecordsSentSuccessfullySinceLastStat += succeeded
-
-		if res.FailedRecordCount > 0 {
-			b.logger.Printf("Partial success when sending a PutRecords request to Kinesis stream %v: %v succeeded, %v failed. Re-enqueueing failed records.", b.streamName, succeeded, res.FailedRecordCount)
-			b.returnSomeFailedRecordsToBuffer(res, records)
-		}
+		b.logger.Printf("Partial success when sending a PutRecords request to Kinesis stream %v: %v succeeded, %v failed. Re-enqueueing failed records.", b.streamName, succeeded, res.FailedRecordCount)
+		b.returnSomeFailedRecordsToBuffer(res, records)
 	}
 }
 
