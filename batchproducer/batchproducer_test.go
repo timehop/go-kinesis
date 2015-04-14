@@ -1,6 +1,7 @@
 package batchproducer
 
 import (
+	"bytes"
 	"errors"
 	"io/ioutil"
 	"log"
@@ -420,6 +421,86 @@ func TestKinesisErrorsStatWhenKinesisReturnsError(t *testing.T) {
 	}
 }
 
+func TestLogMessageWhenKinesisSucceeds(t *testing.T) {
+	t.Parallel()
+
+	b := newProducer(&mockBatchingClient{shouldErr: false}, 100, 0, 20)
+	loggerBuffer, logger := newBufferedLogger()
+	b.logger = logger
+	b.Start()
+	defer b.Stop()
+
+	// Adding 20 **will** trigger a batch
+	b.addRecordsAndWait(20, 2)
+
+	loggerString := loggerBuffer.String()
+	requiredString := "PutRecords request succeeded: sent 20 records to Kinesis stream"
+	if !strings.Contains(loggerString, requiredString) {
+		t.Errorf("%s does not contain %s", loggerString, requiredString)
+	}
+}
+
+func TestLogMessageWhenKinesisReturnsError(t *testing.T) {
+	t.Parallel()
+
+	b := newProducer(&mockBatchingClient{shouldErr: true}, 100, 0, 20)
+	loggerBuffer, logger := newBufferedLogger()
+	b.logger = logger
+	b.Start()
+	defer b.Stop()
+
+	// Adding 20 **will** trigger a batch
+	b.addRecordsAndWait(20, 2)
+
+	loggerString := loggerBuffer.String()
+	requiredString := "Error occurred when sending PutRecords request"
+	if !strings.Contains(loggerString, requiredString) {
+		t.Errorf("%s does not contain %s", loggerString, requiredString)
+	}
+}
+
+func TestLogMessageWhenSomeRecordsFail(t *testing.T) {
+	t.Parallel()
+
+	sr := &statReceiver{}
+	b := newProducer(&mockBatchingClient{}, 100, 2*time.Millisecond, 20)
+	b.statReceiver = sr
+	b.statInterval = 1 * time.Millisecond
+	b.maxAttemptsPerRecord = 2
+	loggerBuffer, logger := newBufferedLogger()
+	b.logger = logger
+	b.Start()
+	defer b.Stop()
+
+	b.addRecordsAndWait(18, 0)
+
+	// Add two records that will fail. partitionKey is (mis)used to specify that the record
+	// should fail.
+	b.Add([]byte("foo"), "fail")
+	b.Add([]byte("foo"), "fail")
+
+	// Sleep long enough for a few attempts to be tried and the failing records to be re-enqueued
+	// and then dropped
+	time.Sleep(5 * time.Millisecond)
+
+	loggerString := loggerBuffer.String()
+
+	requiredString := "Partial success when sending a PutRecords request"
+	if !strings.Contains(loggerString, requiredString) {
+		t.Errorf("%s does not contain %s", loggerString, requiredString)
+	}
+
+	requiredString = "Re-enqueueing failed record to buffer for retry. Error code was: 'foo'"
+	if !strings.Contains(loggerString, requiredString) {
+		t.Errorf("%s does not contain %s", loggerString, requiredString)
+	}
+
+	requiredString = "Dropping failed record; it has hit 2 attempts which is the maximum"
+	if !strings.Contains(loggerString, requiredString) {
+		t.Errorf("%s does not contain %s", loggerString, requiredString)
+	}
+}
+
 type mockBatchingClient struct {
 	calls     int
 	shouldErr bool
@@ -495,4 +576,10 @@ func (s *statReceiver) Receive(sf StatsBatch) {
 	s.totalKinesisErrorsSinceLastStat += sf.KinesisErrorsSinceLastStat
 	s.totalRecordsSentSuccessfully += sf.RecordsSentSuccessfullySinceLastStat
 	s.totalRecordsDroppedSinceLastStat += sf.RecordsDroppedSinceLastStat
+}
+
+func newBufferedLogger() (*bytes.Buffer, *log.Logger) {
+	buf := new(bytes.Buffer)
+	logger := log.New(buf, "", 0)
+	return buf, logger
 }
