@@ -3,6 +3,7 @@ package batchproducer
 import (
 	"errors"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -27,18 +28,6 @@ type Producer interface {
 	// that it’s critical to check the return value because the BatchProducer could have
 	// died in the background due to a panic (or something).
 	Add(data []byte, partitionKey string) error
-
-	// Setters
-	SetMaxAttemptsPerRecord(int) error
-	SetStatReceiver(StatReceiver) error
-
-	// This interval will be used to make a *best effort* attempt to send stats *approximately*
-	// when this interval elapses. There’s no guarantee, however, since the main goroutine is
-	// used to send the stats and therefore there may be some skew.
-	SetStatInterval(time.Duration) error
-
-	// SetProblemPolicy sets the ProblemPolicy.
-	SetProblemPolicy(ProblemPolicy) error
 }
 
 // StatReceiver defines an object that can accept stats.
@@ -66,76 +55,104 @@ type BatchingKinesisClient interface {
 	PutRecords(args *kinesis.RequestArgs) (resp *kinesis.PutRecordsResp, err error)
 }
 
-// ProblemPolicy contains values that instruct the Producer how to behave in certain problem cases.
-type ProblemPolicy struct {
-	AddBlocksWhenBufferFull bool // if false, Add will return an error if the buffer is full
+// Config is a collection of config values for a Producer
+type Config struct {
+	// AddBlocksWhenBufferFull controls the behavior of Add when the buffer is full. If true, Add
+	// will block. If false, Add will return an error. This enables integrating applications to
+	// decide how they want to handle a full buffer e.g. so they can discard records if there’s
+	// a problem.
+	AddBlocksWhenBufferFull bool
+
+	// BatchSize controls the maximum size of the batches sent to Kinesis. If the number of records
+	// in the buffer hits this size, a batch of this size will be sent at that time, regardless of
+	// whether FlushInterval has a value or not.
+	BatchSize int
+
+	// BufferSize is the size of the buffer that stores records before they are sent to the Kinesis
+	// stream. If when Add is called the number of records in the buffer is >= bufferSize then
+	// Add will either block or return an error, depending on the value of AddBlocksWhenBufferFull.
+	BufferSize int
+
+	// FlushInterval controls how often the buffer is flushed to Kinesis. If nonzero, then every
+	// time this interval occurs, if there are any records in the buffer, they will be flushed,
+	// no matter how few there are. The size of the batch that’s flushed may be as small as 1 but
+	// will be no larger than BatchSize.
+	FlushInterval time.Duration
+
+	// The logger used by the Producer.
+	Logger *log.Logger
+
+	// MaxAttemptsPerRecord defines how many attempts should be made for each record before it is
+	// dropped. You probably want this higher than the init default of 0.
+	MaxAttemptsPerRecord int
+
+	// StatInterval will be used to make a *best effort* attempt to send stats *approximately*
+	// when this interval elapses. There’s no guarantee, however, since the main goroutine is
+	// used to send the stats and therefore there may be some skew.
+	StatInterval time.Duration
+
+	// StatReceiver will have its Receive method called approximately every StatInterval.
+	StatReceiver StatReceiver
+}
+
+// DefaultConfig is provided for convenience; if you have no specific preferences on how you’d
+// like to configure your Producer you can pass this into New.
+var DefaultConfig = Config{
+	AddBlocksWhenBufferFull: false,
+	BufferSize:              10000,
+	FlushInterval:           1 * time.Second,
+	BatchSize:               10,
+	MaxAttemptsPerRecord:    10,
+	StatInterval:            1 * time.Second,
+	Logger:                  log.New(os.Stdout, "", log.LstdFlags),
 }
 
 // New creates and returns a BatchProducer that will do nothing until its Start method is called.
 // Once it is started, it will flush a batch to Kinesis whenever either
 // the flushInterval occurs (if flushInterval > 0) or the batchSize is reached,
 // whichever happens first.
-// `bufferSize` is the size of the buffer that stores records before they are sent to the Kinesis
-// stream. If the number of records in the buffer is equal to or greater than bufferSize then the
-// Add method will return an error.
-// `batchSize` is the max number of records in each batch request sent to Kinesis.
-// The Producer created has a ProblemPolicy initiatilzed with all default values. If you wish to
-// change the values, construct a ProblemPolicy and pass it to SetProblemPolicy.
-// TODO: this is too many args. Maybe instead have some defaults and add some setter methods for the less critical
-// params
 func New(
 	client BatchingKinesisClient,
 	streamName string,
-	bufferSize int,
-	flushInterval time.Duration,
-	batchSize int,
-	logger *log.Logger,
+	config Config,
 ) (Producer, error) {
-	if batchSize < 1 || batchSize > 500 {
-		return nil, errors.New("batchSize must be between 1 and 500 inclusive")
+	if config.BatchSize < 1 || config.BatchSize > 500 {
+		return nil, errors.New("BatchSize must be between 1 and 500 inclusive")
 	}
 
-	if bufferSize < batchSize && flushInterval <= 0 {
-		return nil, errors.New("If bufferSize < batchSize && flushInterval <= 0 then the buffer will eventually fill up and Add will block forever.")
+	if config.BufferSize < config.BatchSize && config.FlushInterval <= 0 {
+		return nil, errors.New("If BufferSize < BatchSize && FlushInterval <= 0 then the buffer will eventually fill up and Add will block forever.")
 	}
 
-	if flushInterval > 0 && flushInterval < 50*time.Millisecond {
+	if config.FlushInterval > 0 && config.FlushInterval < 50*time.Millisecond {
 		return nil, errors.New("Are you crazy?")
 	}
 
 	batchProducer := batchProducer{
-		client:               client,
-		streamName:           streamName,
-		flushInterval:        flushInterval,
-		batchSize:            batchSize,
-		maxAttemptsPerRecord: 10,
-		logger:               logger,
-		statInterval:         time.Second,
-		currentStat:          new(StatsBatch),
-		records:              make(chan batchRecord, bufferSize),
-		stop:                 make(chan interface{}),
+		client:      client,
+		streamName:  streamName,
+		config:      config,
+		logger:      config.Logger,
+		currentStat: new(StatsBatch),
+		records:     make(chan batchRecord, config.BufferSize),
+		stop:        make(chan interface{}),
 	}
 
 	return &batchProducer, nil
 }
 
 type batchProducer struct {
-	client               BatchingKinesisClient
-	streamName           string
-	flushInterval        time.Duration
-	batchSize            int
-	maxAttemptsPerRecord int
-	logger               *log.Logger
-	running              bool
-	runningMu            sync.Mutex
-	consecutiveErrors    int
-	currentDelay         time.Duration
-	statInterval         time.Duration
-	statReceiver         StatReceiver
-	currentStat          *StatsBatch
-	records              chan batchRecord
-	stop                 chan interface{}
-	problemPolicy        ProblemPolicy
+	client            BatchingKinesisClient
+	streamName        string
+	config            Config
+	logger            *log.Logger
+	running           bool
+	runningMu         sync.Mutex
+	consecutiveErrors int
+	currentDelay      time.Duration
+	currentStat       *StatsBatch
+	records           chan batchRecord
+	stop              chan interface{}
 }
 
 type batchRecord struct {
@@ -149,7 +166,7 @@ func (b *batchProducer) Add(data []byte, partitionKey string) error {
 	if !b.isRunning() {
 		return errors.New("Cannot call Add when BatchProducer is not running (to prevent the buffer filling up and Add blocking indefinitely).")
 	}
-	if b.isBufferFull() && !b.problemPolicy.AddBlocksWhenBufferFull {
+	if b.isBufferFull() && !b.config.AddBlocksWhenBufferFull {
 		return errors.New("Buffer is full")
 	}
 	b.records <- batchRecord{data: data, partitionKey: partitionKey}
@@ -173,14 +190,14 @@ func (b *batchProducer) Start() error {
 
 func (b *batchProducer) run() {
 	flushTicker := &time.Ticker{}
-	if b.flushInterval > 0 {
-		flushTicker = time.NewTicker(b.flushInterval)
+	if b.config.FlushInterval > 0 {
+		flushTicker = time.NewTicker(b.config.FlushInterval)
 		defer flushTicker.Stop()
 	}
 
 	statTicker := &time.Ticker{}
-	if b.statReceiver != nil && b.statInterval > 0 {
-		statTicker = time.NewTicker(b.statInterval)
+	if b.config.StatReceiver != nil && b.config.StatInterval > 0 {
+		statTicker = time.NewTicker(b.config.StatInterval)
 		defer statTicker.Stop()
 	}
 
@@ -196,7 +213,7 @@ func (b *batchProducer) run() {
 		case <-b.stop:
 			break
 		default:
-			if len(b.records) >= b.batchSize {
+			if len(b.records) >= b.config.BatchSize {
 				b.sendBatch()
 			} else {
 				time.Sleep(1 * time.Millisecond)
@@ -211,38 +228,6 @@ func (b *batchProducer) Stop() error {
 	if b.isRunning() {
 		b.stop <- true
 	}
-	return nil
-}
-
-func (b *batchProducer) SetMaxAttemptsPerRecord(v int) error {
-	if b.isRunning() {
-		return errors.New("Cannot set max attempts per record while Producer is running.")
-	}
-	b.maxAttemptsPerRecord = v
-	return nil
-}
-
-func (b *batchProducer) SetStatReceiver(sr StatReceiver) error {
-	if b.isRunning() {
-		return errors.New("Cannot set StatReceiver while Producer is running.")
-	}
-	b.statReceiver = sr
-	return nil
-}
-
-func (b *batchProducer) SetStatInterval(si time.Duration) error {
-	if b.isRunning() {
-		return errors.New("Cannot set stat interval while Producer is running.")
-	}
-	b.statInterval = si
-	return nil
-}
-
-func (b *batchProducer) SetProblemPolicy(pp ProblemPolicy) error {
-	if b.isRunning() {
-		return errors.New("Cannot set problem policy while Producer is running.")
-	}
-	b.problemPolicy = pp
 	return nil
 }
 
@@ -320,8 +305,8 @@ func (b *batchProducer) isBufferFull() bool {
 func (b *batchProducer) takeRecordsFromBuffer() []batchRecord {
 	var size int
 	bufferLen := len(b.records)
-	if bufferLen >= b.batchSize {
-		size = b.batchSize
+	if bufferLen >= b.config.BatchSize {
+		size = b.config.BatchSize
 	} else {
 		size = bufferLen
 	}
@@ -357,7 +342,7 @@ func (b *batchProducer) returnSomeFailedRecordsToBuffer(res *kinesis.PutRecordsR
 		if result.ErrorCode != "" {
 			record.sendAttempts++
 
-			if record.sendAttempts < b.maxAttemptsPerRecord {
+			if record.sendAttempts < b.config.MaxAttemptsPerRecord {
 				b.logger.Printf("Re-enqueueing failed record to buffer for retry. Error code was: '%v' and message was '%v'", result.ErrorCode, result.ErrorMessage)
 				// Not using b.Add because we want to preserve the value of record.sendAttempts.
 				b.records <- record
@@ -376,7 +361,7 @@ func (b *batchProducer) sendStats() {
 
 	// I considered running this as a goroutine, but I’m concerned about leaks. So instead, for now,
 	// the provider of the BatchStatReceiver must ensure that it is either very fast or non-blocking.
-	b.statReceiver.Receive(*b.currentStat)
+	b.config.StatReceiver.Receive(*b.currentStat)
 
 	b.currentStat = new(StatsBatch)
 }

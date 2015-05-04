@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,7 +21,12 @@ var (
 
 func TestNewBatchProducerWithGoodValues(t *testing.T) {
 	t.Parallel()
-	b, err := New(&mockBatchingClient{}, "foo", 10, 0, 10, discardLogger)
+	config := Config{
+		BufferSize:    10,
+		FlushInterval: 0,
+		BatchSize:     10,
+	}
+	b, err := New(&mockBatchingClient{}, "foo", config)
 	if b == nil {
 		t.Error("b == nil")
 	}
@@ -31,7 +37,12 @@ func TestNewBatchProducerWithGoodValues(t *testing.T) {
 
 func TestNewBatchProducerWithBadBatchSize(t *testing.T) {
 	t.Parallel()
-	b, err := New(&mockBatchingClient{}, "foo", 10000, 0, 1000, discardLogger)
+	config := Config{
+		BufferSize:    10000,
+		FlushInterval: 0,
+		BatchSize:     1000,
+	}
+	b, err := New(&mockBatchingClient{}, "foo", config)
 	if b != nil {
 		t.Errorf("%q != nil", b)
 	}
@@ -45,7 +56,12 @@ func TestNewBatchProducerWithBadBatchSize(t *testing.T) {
 
 func TestNewBatchProducerWithBadValues(t *testing.T) {
 	t.Parallel()
-	b, err := New(&mockBatchingClient{}, "foo", 10, 0, 500, discardLogger)
+	config := Config{
+		BufferSize:    10,
+		FlushInterval: 0,
+		BatchSize:     500,
+	}
+	b, err := New(&mockBatchingClient{}, "foo", config)
 	if b != nil {
 		t.Errorf("%q != nil", b)
 	}
@@ -59,7 +75,12 @@ func TestNewBatchProducerWithBadValues(t *testing.T) {
 
 func TestAddRecordWhenStarted(t *testing.T) {
 	t.Parallel()
-	b, err := New(&mockBatchingClient{}, "foo", 100, 0, 10, discardLogger)
+	config := Config{
+		BufferSize:    100,
+		FlushInterval: 0,
+		BatchSize:     10,
+	}
+	b, err := New(&mockBatchingClient{}, "foo", config)
 	if err != nil {
 		t.Fatalf("%v != nil", err)
 	}
@@ -75,7 +96,12 @@ func TestAddRecordWhenStarted(t *testing.T) {
 
 func TestAddRecordWhenStopped(t *testing.T) {
 	t.Parallel()
-	b, err := New(&mockBatchingClient{}, "foo", 100, 0, 10, discardLogger)
+	config := Config{
+		BufferSize:    100,
+		FlushInterval: 0,
+		BatchSize:     10,
+	}
+	b, err := New(&mockBatchingClient{}, "foo", config)
 	if err != nil {
 		t.Fatalf("%v != nil", err)
 	}
@@ -208,7 +234,7 @@ func TestBatchError(t *testing.T) {
 func TestBatchPartialFailure(t *testing.T) {
 	t.Parallel()
 	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
-	b.maxAttemptsPerRecord = 2
+	b.config.MaxAttemptsPerRecord = 2
 	b.Start()
 	defer b.Stop()
 
@@ -238,8 +264,8 @@ func TestBufferSizeStat(t *testing.T) {
 	sr := &statReceiver{}
 
 	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
-	b.statReceiver = sr
-	b.statInterval = 1 * time.Millisecond
+	b.config.StatReceiver = sr
+	b.config.StatInterval = 1 * time.Millisecond
 	b.Start()
 	defer b.Stop()
 
@@ -274,8 +300,8 @@ func TestSuccessfulRecordsStat(t *testing.T) {
 
 	sr := &statReceiver{}
 	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
-	b.statReceiver = sr
-	b.statInterval = 1 * time.Millisecond
+	b.config.StatReceiver = sr
+	b.config.StatInterval = 1 * time.Millisecond
 	// b.logger = stdoutLogger // TEMP TEMP TEMP
 	b.Start()
 	defer b.Stop()
@@ -310,9 +336,9 @@ func TestSuccessfulRecordsStatWhenSomeRecordsFail(t *testing.T) {
 
 	sr := &statReceiver{}
 	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
-	b.statReceiver = sr
-	b.statInterval = 1 * time.Millisecond
-	b.maxAttemptsPerRecord = 2
+	b.config.StatReceiver = sr
+	b.config.StatInterval = 1 * time.Millisecond
+	b.config.MaxAttemptsPerRecord = 2
 	b.Start()
 	defer b.Stop()
 
@@ -336,9 +362,9 @@ func TestRecordsDroppedStatWhenSomeRecordsFail(t *testing.T) {
 
 	sr := &statReceiver{}
 	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
-	b.statReceiver = sr
-	b.statInterval = 1 * time.Millisecond
-	b.maxAttemptsPerRecord = 1
+	b.config.StatReceiver = sr
+	b.config.StatInterval = 1 * time.Millisecond
+	b.config.MaxAttemptsPerRecord = 1
 	b.Start()
 	defer b.Stop()
 
@@ -362,8 +388,8 @@ func TestSuccessfulRecordsStatWhenKinesisReturnsError(t *testing.T) {
 
 	sr := &statReceiver{}
 	b := newProducer(&mockBatchingClient{shouldErr: true}, 100, 0, 20)
-	b.statReceiver = sr
-	b.statInterval = 1 * time.Millisecond
+	b.config.StatReceiver = sr
+	b.config.StatInterval = 1 * time.Millisecond
 	b.Start()
 	defer b.Stop()
 
@@ -385,8 +411,8 @@ func TestKinesisErrorsStatWhenKinesisSucceeds(t *testing.T) {
 
 	sr := &statReceiver{}
 	b := newProducer(&mockBatchingClient{shouldErr: false}, 100, 0, 20)
-	b.statReceiver = sr
-	b.statInterval = 1 * time.Millisecond
+	b.config.StatReceiver = sr
+	b.config.StatInterval = 1 * time.Millisecond
 	b.Start()
 	defer b.Stop()
 
@@ -408,8 +434,8 @@ func TestKinesisErrorsStatWhenKinesisReturnsError(t *testing.T) {
 
 	sr := &statReceiver{}
 	b := newProducer(&mockBatchingClient{shouldErr: true}, 100, 0, 20)
-	b.statReceiver = sr
-	b.statInterval = 1 * time.Millisecond
+	b.config.StatReceiver = sr
+	b.config.StatInterval = 1 * time.Millisecond
 	b.Start()
 	defer b.Stop()
 
@@ -464,9 +490,9 @@ func TestLogMessageWhenSomeRecordsFail(t *testing.T) {
 
 	sr := &statReceiver{}
 	b := newProducer(&mockBatchingClient{}, 100, 2*time.Millisecond, 20)
-	b.statReceiver = sr
-	b.statInterval = 1 * time.Millisecond
-	b.maxAttemptsPerRecord = 2
+	b.config.StatReceiver = sr
+	b.config.StatInterval = 1 * time.Millisecond
+	b.config.MaxAttemptsPerRecord = 2
 	loggerBuffer, logger := newBufferedLogger()
 	b.logger = logger
 	b.Start()
@@ -524,8 +550,7 @@ func TestProblemPolicyAddBlocksTrue(t *testing.T) {
 	t.Parallel()
 
 	b := newProducer(&mockBatchingClient{}, 10, 0, 20)
-	pp := ProblemPolicy{AddBlocksWhenBufferFull: true}
-	b.SetProblemPolicy(pp)
+	b.config.AddBlocksWhenBufferFull = true
 	b.Start()
 	defer b.Stop()
 
@@ -549,11 +574,14 @@ func TestProblemPolicyAddBlocksTrue(t *testing.T) {
 
 type mockBatchingClient struct {
 	calls     int
+	callsMu   sync.Mutex
 	shouldErr bool
 	numToFail int
 }
 
 func (s *mockBatchingClient) PutRecords(args *kinesis.RequestArgs) (resp *kinesis.PutRecordsResp, err error) {
+	s.callsMu.Lock()
+	defer s.callsMu.Unlock()
 	s.calls++
 
 	if s.shouldErr {
@@ -575,16 +603,22 @@ func (s *mockBatchingClient) PutRecords(args *kinesis.RequestArgs) (resp *kinesi
 }
 
 func newProducer(client *mockBatchingClient, bufferSize int, flushInterval time.Duration, batchSize int) *batchProducer {
+	config := Config{
+		BufferSize:           bufferSize,
+		FlushInterval:        flushInterval,
+		BatchSize:            batchSize,
+		Logger:               discardLogger,
+		MaxAttemptsPerRecord: 2,
+	}
+
 	batchProducer := batchProducer{
-		client:               client,
-		streamName:           "foo",
-		flushInterval:        flushInterval,
-		batchSize:            batchSize,
-		maxAttemptsPerRecord: 2,
-		logger:               discardLogger,
-		currentStat:          new(StatsBatch),
-		records:              make(chan batchRecord, bufferSize),
-		stop:                 make(chan interface{}),
+		client:      client,
+		streamName:  "foo",
+		config:      config,
+		logger:      config.Logger,
+		currentStat: new(StatsBatch),
+		records:     make(chan batchRecord, bufferSize),
+		stop:        make(chan interface{}),
 	}
 
 	return &batchProducer
