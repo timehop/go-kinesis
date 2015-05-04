@@ -501,6 +501,52 @@ func TestLogMessageWhenSomeRecordsFail(t *testing.T) {
 	}
 }
 
+func TestProblemPolicyAddBlocksFalse(t *testing.T) {
+	t.Parallel()
+
+	b := newProducer(&mockBatchingClient{}, 10, 0, 20)
+	b.Start()
+	defer b.Stop()
+
+	// Adding 10 will fill up the buffer and not trigger a batch
+	b.addRecordsAndWait(10, 2)
+
+	data := []byte("The cheese is old and moldy, where is the bathroom?")
+	partitionKey := "foo"
+	err := b.Add(data, partitionKey)
+
+	if err == nil {
+		t.Errorf("%s == nil", err)
+	}
+}
+
+func TestProblemPolicyAddBlocksTrue(t *testing.T) {
+	t.Parallel()
+
+	b := newProducer(&mockBatchingClient{}, 10, 0, 20)
+	pp := ProblemPolicy{AddBlocksWhenBufferFull: true}
+	b.SetProblemPolicy(pp)
+	b.Start()
+	defer b.Stop()
+
+	// Adding 10 will fill up the buffer and not trigger a batch
+	b.addRecordsAndWait(10, 2)
+
+	// This should block so we need to run this in a goroutine
+	go func() {
+		data := []byte("The cheese is old and moldy, where is the bathroom?")
+		partitionKey := "foo"
+		b.Add(data, partitionKey)
+		t.Fatal("We should never have gotten here.")
+	}()
+
+	time.Sleep(1 * time.Millisecond)
+
+	if len(b.records) != 10 {
+		t.Errorf("%v != 10", len(b.records))
+	}
+}
+
 type mockBatchingClient struct {
 	calls     int
 	shouldErr bool

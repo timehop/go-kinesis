@@ -36,6 +36,9 @@ type Producer interface {
 	// when this interval elapses. There’s no guarantee, however, since the main goroutine is
 	// used to send the stats and therefore there may be some skew.
 	SetStatInterval(time.Duration) error
+
+	// SetProblemPolicy sets the ProblemPolicy.
+	SetProblemPolicy(ProblemPolicy) error
 }
 
 // StatReceiver defines an object that can accept stats.
@@ -63,14 +66,21 @@ type BatchingKinesisClient interface {
 	PutRecords(args *kinesis.RequestArgs) (resp *kinesis.PutRecordsResp, err error)
 }
 
+// ProblemPolicy contains values that instruct the Producer how to behave in certain problem cases.
+type ProblemPolicy struct {
+	AddBlocksWhenBufferFull bool // if false, Add will return an error if the buffer is full
+}
+
 // New creates and returns a BatchProducer that will do nothing until its Start method is called.
 // Once it is started, it will flush a batch to Kinesis whenever either
 // the flushInterval occurs (if flushInterval > 0) or the batchSize is reached,
 // whichever happens first.
 // `bufferSize` is the size of the buffer that stores records before they are sent to the Kinesis
 // stream. If the number of records in the buffer is equal to or greater than bufferSize then the
-// Add method will block.
+// Add method will return an error.
 // `batchSize` is the max number of records in each batch request sent to Kinesis.
+// The Producer created has a ProblemPolicy initiatilzed with all default values. If you wish to
+// change the values, construct a ProblemPolicy and pass it to SetProblemPolicy.
 // TODO: this is too many args. Maybe instead have some defaults and add some setter methods for the less critical
 // params
 func New(
@@ -125,6 +135,7 @@ type batchProducer struct {
 	currentStat          *StatsBatch
 	records              chan batchRecord
 	stop                 chan interface{}
+	problemPolicy        ProblemPolicy
 }
 
 type batchRecord struct {
@@ -137,6 +148,9 @@ type batchRecord struct {
 func (b *batchProducer) Add(data []byte, partitionKey string) error {
 	if !b.isRunning() {
 		return errors.New("Cannot call Add when BatchProducer is not running (to prevent the buffer filling up and Add blocking indefinitely).")
+	}
+	if b.isBufferFull() && !b.problemPolicy.AddBlocksWhenBufferFull {
+		return errors.New("Buffer is full")
 	}
 	b.records <- batchRecord{data: data, partitionKey: partitionKey}
 	return nil
@@ -224,6 +238,14 @@ func (b *batchProducer) SetStatInterval(si time.Duration) error {
 	return nil
 }
 
+func (b *batchProducer) SetProblemPolicy(pp ProblemPolicy) error {
+	if b.isRunning() {
+		return errors.New("Cannot set problem policy while Producer is running.")
+	}
+	b.problemPolicy = pp
+	return nil
+}
+
 func (b *batchProducer) setRunning(running bool) {
 	b.runningMu.Lock()
 	defer b.runningMu.Unlock()
@@ -260,7 +282,15 @@ func (b *batchProducer) sendBatch() {
 		b.consecutiveErrors++
 		b.currentStat.KinesisErrorsSinceLastStat++
 		b.logger.Printf("Error occurred when sending PutRecords request to Kinesis stream %v: %v", b.streamName, err)
-		b.returnRecordsToBuffer(records)
+
+		if b.consecutiveErrors >= 5 && b.isBufferFullOrNearlyFull() {
+			// In order to prevent Add from hanging indefinitely, we start dropping records
+			b.logger.Printf("DROPPING %v records because buffer is full or nearly full and there have been %v consecutive errors from Kinesis", len(records), b.consecutiveErrors)
+		} else {
+			b.logger.Printf("Returning %v records to buffer (%v consecutive errors)", len(records), b.consecutiveErrors)
+			b.returnRecordsToBuffer(records)
+		}
+
 		return
 	}
 
@@ -276,6 +306,15 @@ func (b *batchProducer) sendBatch() {
 		b.logger.Printf("Partial success when sending a PutRecords request to Kinesis stream %v: %v succeeded, %v failed. Re-enqueueing failed records.", b.streamName, succeeded, res.FailedRecordCount)
 		b.returnSomeFailedRecordsToBuffer(res, records)
 	}
+}
+
+func (b *batchProducer) isBufferFullOrNearlyFull() bool {
+	return float32(len(b.records))/float32(cap(b.records)) >= 0.95
+}
+
+func (b *batchProducer) isBufferFull() bool {
+	// Treating 99% as full because IIRC, len(chan) has a margin of error
+	return float32(len(b.records))/float32(cap(b.records)) >= 0.99
 }
 
 func (b *batchProducer) takeRecordsFromBuffer() []batchRecord {
