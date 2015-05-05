@@ -247,7 +247,7 @@ func (b *batchProducer) setRunning(running bool) {
 }
 
 func (b *batchProducer) isRunning() bool {
-	return b.running == 1
+	return atomic.LoadInt32(&b.running) == 1
 }
 
 func (b *batchProducer) sendBatch() {
