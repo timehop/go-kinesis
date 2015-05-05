@@ -4,7 +4,7 @@ import (
 	"errors"
 	"log"
 	"os"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/timehop/go-kinesis"
@@ -147,8 +147,7 @@ type batchProducer struct {
 	streamName        string
 	config            Config
 	logger            *log.Logger
-	running           bool
-	runningMu         sync.Mutex
+	running           int32
 	consecutiveErrors int
 	currentDelay      time.Duration
 	currentStat       *StatsBatch
@@ -233,15 +232,22 @@ func (b *batchProducer) Stop() error {
 }
 
 func (b *batchProducer) setRunning(running bool) {
-	b.runningMu.Lock()
-	defer b.runningMu.Unlock()
-	b.running = running
+	var newValue int32
+	if running {
+		newValue = 1
+	} else {
+		newValue = 0
+	}
+
+	oldValue := b.running
+
+	for swapped := false; !swapped; {
+		swapped = atomic.CompareAndSwapInt32(&b.running, oldValue, newValue)
+	}
 }
 
 func (b *batchProducer) isRunning() bool {
-	b.runningMu.Lock()
-	defer b.runningMu.Unlock()
-	return b.running
+	return b.running == 1
 }
 
 func (b *batchProducer) sendBatch() {
