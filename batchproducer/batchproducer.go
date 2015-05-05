@@ -10,6 +10,9 @@ import (
 	"github.com/timehop/go-kinesis"
 )
 
+// MaxKinesisBatchSize is the maximum number of records that Kinesis accepts in a request
+const MaxKinesisBatchSize = 500
+
 // Producer collects records individually and then sends them to Kinesis in
 // batches in the background using PutRecords, with retries.
 // A Producer will do nothing until Start is called.
@@ -18,8 +21,7 @@ type Producer interface {
 	Start() error
 
 	// Stop signals the main goroutine to finish. Once this is called, Add will immediately start
-	// returning errors (unless and until Start is called again). Stop will block until
-	// all remaining records in the buffer have been sent.
+	// returning errors (unless and until Start is called again).
 	Stop() error
 
 	// Add might block if the BatchProducer has a buffer and the buffer is full.
@@ -28,6 +30,15 @@ type Producer interface {
 	// that it’s critical to check the return value because the BatchProducer could have
 	// died in the background due to a panic (or something).
 	Add(data []byte, partitionKey string) error
+
+	// Flush stops the Producer using Stop and attempts to send all buffered records to Kinesis as
+	// fast as possible with batches of size 500 (the maximum). It blocks until either all records
+	// are sent or the timeout expires. It returns the number of records still remaining in the
+	// buffer or (possibly) an error. (It doesn’t currently return errors but that is in the
+	// signature for future-proofing.) A timeout value of 0 means no timeout.
+	// If Flush finishes sending all records without timing out, it will cause a StatsBatch to be
+	// sent to the StatsReceiver in Config, if set.
+	Flush(timeout time.Duration) (int, error)
 }
 
 // StatReceiver defines an object that can accept stats.
@@ -117,7 +128,7 @@ func New(
 	streamName string,
 	config Config,
 ) (Producer, error) {
-	if config.BatchSize < 1 || config.BatchSize > 500 {
+	if config.BatchSize < 1 || config.BatchSize > MaxKinesisBatchSize {
 		return nil, errors.New("BatchSize must be between 1 and 500 inclusive")
 	}
 
@@ -162,7 +173,7 @@ type batchRecord struct {
 	sendAttempts int
 }
 
-// from/for interface BatchProducer
+// from/for interface Producer
 func (b *batchProducer) Add(data []byte, partitionKey string) error {
 	if !b.isRunning() {
 		return errors.New("Cannot call Add when BatchProducer is not running (to prevent the buffer filling up and Add blocking indefinitely).")
@@ -174,7 +185,7 @@ func (b *batchProducer) Add(data []byte, partitionKey string) error {
 	return nil
 }
 
-// from/for interface BatchProducer
+// from/for interface Producer
 func (b *batchProducer) Start() error {
 	if b.isRunning() {
 		return nil
@@ -208,14 +219,15 @@ func (b *batchProducer) run() {
 	for {
 		select {
 		case <-flushTicker.C:
-			b.sendBatch()
+			b.sendBatch(b.config.BatchSize)
 		case <-statTicker.C:
 			b.sendStats()
 		case <-b.stop:
-			break
+			b.sendStats()
+			return
 		default:
 			if len(b.records) >= b.config.BatchSize {
-				b.sendBatch()
+				b.sendBatch(b.config.BatchSize)
 			} else {
 				time.Sleep(1 * time.Millisecond)
 			}
@@ -223,13 +235,42 @@ func (b *batchProducer) run() {
 	}
 }
 
-// from/for interface BatchProducer
+// from/for interface Producer
 func (b *batchProducer) Stop() error {
-	// TODO: Immediately stop accepting new records by Add, then block until all the records in the buffer have been sent
 	if b.isRunning() {
 		b.stop <- true
 	}
 	return nil
+}
+
+// from/for interface Producer
+// TODO: send all batches in parallel, will require broader refactoring
+func (b *batchProducer) Flush(timeout time.Duration) (int, error) {
+	b.Stop()
+
+	timer := time.NewTimer(timeout)
+	if timeout == 0 {
+		timer.Stop()
+	}
+
+	timedOut := false
+
+loop:
+	for len(b.records) > 0 {
+		select {
+		case <-timer.C:
+			timedOut = true
+			break loop
+		default:
+			b.sendBatch(MaxKinesisBatchSize)
+		}
+	}
+
+	if !timedOut {
+		b.sendStats()
+	}
+
+	return len(b.records), nil
 }
 
 func (b *batchProducer) setRunning(running bool) {
@@ -244,7 +285,7 @@ func (b *batchProducer) isRunning() bool {
 	return b.running
 }
 
-func (b *batchProducer) sendBatch() {
+func (b *batchProducer) sendBatch(batchSize int) {
 	if len(b.records) == 0 {
 		return
 	}
@@ -261,7 +302,7 @@ func (b *batchProducer) sendBatch() {
 		time.Sleep(b.currentDelay)
 	}
 
-	records := b.takeRecordsFromBuffer()
+	records := b.takeRecordsFromBuffer(batchSize)
 	res, err := b.client.PutRecords(b.recordsToArgs(records))
 
 	if err != nil {
@@ -303,11 +344,11 @@ func (b *batchProducer) isBufferFull() bool {
 	return float32(len(b.records))/float32(cap(b.records)) >= 0.99
 }
 
-func (b *batchProducer) takeRecordsFromBuffer() []batchRecord {
+func (b *batchProducer) takeRecordsFromBuffer(batchSize int) []batchRecord {
 	var size int
 	bufferLen := len(b.records)
-	if bufferLen >= b.config.BatchSize {
-		size = b.config.BatchSize
+	if bufferLen >= batchSize {
+		size = batchSize
 	} else {
 		size = bufferLen
 	}
@@ -358,6 +399,10 @@ func (b *batchProducer) returnSomeFailedRecordsToBuffer(res *kinesis.PutRecordsR
 }
 
 func (b *batchProducer) sendStats() {
+	if b.config.StatReceiver == nil {
+		return
+	}
+
 	b.currentStat.BufferSize = len(b.records)
 
 	// I considered running this as a goroutine, but I’m concerned about leaks. So instead, for now,
