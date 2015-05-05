@@ -96,7 +96,8 @@ type Config struct {
 }
 
 // DefaultConfig is provided for convenience; if you have no specific preferences on how you’d
-// like to configure your Producer you can pass this into New.
+// like to configure your Producer you can pass this into New. The default value of Logger is
+// the same as the standard logger in "log" : `log.New(os.Stderr, "", log.LstdFlags)`.
 var DefaultConfig = Config{
 	AddBlocksWhenBufferFull: false,
 	BufferSize:              10000,
@@ -104,7 +105,7 @@ var DefaultConfig = Config{
 	BatchSize:               10,
 	MaxAttemptsPerRecord:    10,
 	StatInterval:            1 * time.Second,
-	Logger:                  log.New(os.Stdout, "", log.LstdFlags),
+	Logger:                  log.New(os.Stderr, "", log.LstdFlags),
 }
 
 // New creates and returns a BatchProducer that will do nothing until its Start method is called.
@@ -121,11 +122,11 @@ func New(
 	}
 
 	if config.BufferSize < config.BatchSize && config.FlushInterval <= 0 {
-		return nil, errors.New("If BufferSize < BatchSize && FlushInterval <= 0 then the buffer will eventually fill up and Add will block forever.")
+		return nil, errors.New("if BufferSize < BatchSize && FlushInterval <= 0 then the buffer will eventually fill up and Add will block forever")
 	}
 
 	if config.FlushInterval > 0 && config.FlushInterval < 50*time.Millisecond {
-		return nil, errors.New("Are you crazy?")
+		return nil, errors.New("are you crazy")
 	}
 
 	batchProducer := batchProducer{
