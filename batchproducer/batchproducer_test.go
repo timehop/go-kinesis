@@ -527,7 +527,7 @@ func TestLogMessageWhenSomeRecordsFail(t *testing.T) {
 	}
 }
 
-func TestProblemPolicyAddBlocksFalse(t *testing.T) {
+func TestAddBlocksFalse(t *testing.T) {
 	t.Parallel()
 
 	b := newProducer(&mockBatchingClient{}, 10, 0, 20)
@@ -546,7 +546,7 @@ func TestProblemPolicyAddBlocksFalse(t *testing.T) {
 	}
 }
 
-func TestProblemPolicyAddBlocksTrue(t *testing.T) {
+func TestAddBlocksTrue(t *testing.T) {
 	t.Parallel()
 
 	b := newProducer(&mockBatchingClient{}, 10, 0, 20)
