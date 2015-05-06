@@ -625,11 +625,14 @@ func TestFlush(t *testing.T) {
 	b.addRecordsAndWait(10, 2)
 
 	timeout := 20 * time.Second
-	remaining, err := b.Flush(timeout)
+	sent, remaining, err := b.Flush(timeout, false)
 	if err != nil {
 		t.Errorf("%s != nil", err)
 	}
 
+	if sent != 10 {
+		t.Errorf("%v != 10", sent)
+	}
 	if remaining > 0 {
 		t.Errorf("%v > 0", remaining)
 	}
@@ -662,12 +665,15 @@ func TestFlushWithTimeout(t *testing.T) {
 	timeout := 5 * time.Millisecond
 
 	start := time.Now()
-	remaining, err := b.Flush(timeout)
+	sent, remaining, err := b.Flush(timeout, false)
 	duration := time.Since(start)
 	if err != nil {
 		t.Errorf("%s != nil", err)
 	}
 
+	if sent != 500 {
+		t.Errorf("%v != 500", sent)
+	}
 	if remaining != 100 {
 		t.Errorf("%v != 100", remaining)
 	}
@@ -700,12 +706,15 @@ func TestFlushWithoutTimeout(t *testing.T) {
 	timeout := 0 * time.Millisecond
 
 	start := time.Now()
-	remaining, err := b.Flush(timeout)
+	sent, remaining, err := b.Flush(timeout, false)
 	duration := time.Since(start)
 	if err != nil {
 		t.Errorf("%s != nil", err)
 	}
 
+	if sent != 600 {
+		t.Errorf("%v != 600", sent)
+	}
 	if remaining != 0 {
 		t.Errorf("%v != 0", remaining)
 	}

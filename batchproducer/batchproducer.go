@@ -36,9 +36,9 @@ type Producer interface {
 	// are sent or the timeout expires. It returns the number of records still remaining in the
 	// buffer or (possibly) an error. (It doesn’t currently return errors but that is in the
 	// signature for future-proofing.) A timeout value of 0 means no timeout.
-	// If Flush finishes sending all records without timing out, it will cause a StatsBatch to be
-	// sent to the StatsReceiver in Config, if set.
-	Flush(timeout time.Duration) (int, error)
+	// If Flush finishes sending all records without timing out, and sendStats is true, it will
+	// cause a single final StatsBatch to be sent to the StatsReceiver in Config, if set.
+	Flush(timeout time.Duration, sendStats bool) (sent int, remaining int, err error)
 }
 
 // StatReceiver defines an object that can accept stats.
@@ -245,7 +245,7 @@ func (b *batchProducer) Stop() error {
 
 // from/for interface Producer
 // TODO: send all batches in parallel, will require broader refactoring
-func (b *batchProducer) Flush(timeout time.Duration) (int, error) {
+func (b *batchProducer) Flush(timeout time.Duration, sendStats bool) (int, int, error) {
 	b.Stop()
 
 	timer := time.NewTimer(timeout)
@@ -254,6 +254,7 @@ func (b *batchProducer) Flush(timeout time.Duration) (int, error) {
 	}
 
 	timedOut := false
+	sent := 0
 
 loop:
 	for len(b.records) > 0 {
@@ -262,15 +263,15 @@ loop:
 			timedOut = true
 			break loop
 		default:
-			b.sendBatch(MaxKinesisBatchSize)
+			sent += b.sendBatch(MaxKinesisBatchSize)
 		}
 	}
 
-	if !timedOut {
+	if !timedOut && sendStats {
 		b.sendStats()
 	}
 
-	return len(b.records), nil
+	return sent, len(b.records), nil
 }
 
 func (b *batchProducer) setRunning(running bool) {
@@ -285,9 +286,11 @@ func (b *batchProducer) isRunning() bool {
 	return b.running
 }
 
-func (b *batchProducer) sendBatch(batchSize int) {
+// Sends batches of records to Kinesis, possibly re-enqueing them if there are any errors or failed
+// records. Returns the number of records successfully sent, if any.
+func (b *batchProducer) sendBatch(batchSize int) int {
 	if len(b.records) == 0 {
-		return
+		return 0
 	}
 
 	// In the future, maybe this could be a RetryPolicy or something
@@ -318,7 +321,7 @@ func (b *batchProducer) sendBatch(batchSize int) {
 			b.returnRecordsToBuffer(records)
 		}
 
-		return
+		return 0
 	}
 
 	b.consecutiveErrors = 0
@@ -333,6 +336,8 @@ func (b *batchProducer) sendBatch(batchSize int) {
 		b.logger.Printf("Partial success when sending a PutRecords request to Kinesis stream %v: %v succeeded, %v failed. Re-enqueueing failed records.", b.streamName, succeeded, res.FailedRecordCount)
 		b.returnSomeFailedRecordsToBuffer(res, records)
 	}
+
+	return succeeded
 }
 
 func (b *batchProducer) isBufferFullOrNearlyFull() bool {
