@@ -119,6 +119,14 @@ var DefaultConfig = Config{
 	Logger:                  log.New(os.Stderr, "", log.LstdFlags),
 }
 
+var (
+	// ErrAlreadyStarted is returned by Start if the Producer is already started.
+	ErrAlreadyStarted = errors.New("already started")
+
+	// ErrAlreadyStopped is returned by Stop if the Producer is already stopped.
+	ErrAlreadyStopped = errors.New("already stopped")
+)
+
 // New creates and returns a BatchProducer that will do nothing until its Start method is called.
 // Once it is started, it will flush a batch to Kinesis whenever either
 // the flushInterval occurs (if flushInterval > 0) or the batchSize is reached,
@@ -148,6 +156,8 @@ func New(
 		currentStat: new(StatsBatch),
 		records:     make(chan batchRecord, config.BufferSize),
 		stop:        make(chan interface{}),
+		stopAck:     make(chan interface{}),
+		startAck:    make(chan interface{}),
 	}
 
 	return &batchProducer, nil
@@ -164,6 +174,8 @@ type batchProducer struct {
 	currentStat       *StatsBatch
 	records           chan batchRecord
 	stop              chan interface{}
+	stopAck           chan interface{}
+	startAck          chan interface{}
 }
 
 type batchRecord struct {
@@ -186,15 +198,16 @@ func (b *batchProducer) Add(data []byte, partitionKey string) error {
 
 // from/for interface Producer
 func (b *batchProducer) Start() error {
-	if b.isRunning() {
-		return nil
+	if !atomic.CompareAndSwapInt32(&b.running, 0, 1) {
+		return ErrAlreadyStarted
 	}
 
 	go b.run()
 
-	for !b.isRunning() {
-		time.Sleep(1 * time.Millisecond)
-	}
+	// We want run to run in the background (in a goroutine) but we don’t want to return until that
+	// goroutine has actually entered its main loop. So we read from this non-buffered channel, which
+	// will block until run writes a value to it.
+	<-b.startAck
 
 	return nil
 }
@@ -212,8 +225,7 @@ func (b *batchProducer) run() {
 		defer statTicker.Stop()
 	}
 
-	b.setRunning(true)
-	defer b.setRunning(false)
+	b.startAck <- true
 
 	for {
 		select {
@@ -223,6 +235,7 @@ func (b *batchProducer) run() {
 			b.sendStats()
 		case <-b.stop:
 			b.sendStats()
+			b.stopAck <- true
 			return
 		default:
 			if len(b.records) >= b.config.BatchSize {
@@ -236,9 +249,11 @@ func (b *batchProducer) run() {
 
 // from/for interface Producer
 func (b *batchProducer) Stop() error {
-	if b.isRunning() {
-		b.stop <- true
+	if !atomic.CompareAndSwapInt32(&b.running, 1, 0) {
+		return ErrAlreadyStopped
 	}
+	b.stop <- true
+	<-b.stopAck
 	return nil
 }
 
@@ -271,21 +286,6 @@ loop:
 	}
 
 	return sent, len(b.records), nil
-}
-
-func (b *batchProducer) setRunning(running bool) {
-	var newValue int32
-	if running {
-		newValue = 1
-	} else {
-		newValue = 0
-	}
-
-	oldValue := b.running
-
-	for swapped := false; !swapped; {
-		swapped = atomic.CompareAndSwapInt32(&b.running, oldValue, newValue)
-	}
 }
 
 func (b *batchProducer) isRunning() bool {

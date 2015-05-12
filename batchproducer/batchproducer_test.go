@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func TestStart(t *testing.T) {
 
 	b := newProducer(&mockBatchingClient{}, 10, 0, 10)
 
-	if b.running {
+	if b.isRunning() {
 		t.Error("b should not be running")
 	}
 
@@ -89,7 +90,7 @@ func TestStart(t *testing.T) {
 		t.Errorf("%v != nil", err)
 	}
 
-	if !b.running {
+	if !b.isRunning() {
 		t.Error("b should be running")
 	}
 }
@@ -99,7 +100,7 @@ func TestStop(t *testing.T) {
 
 	b := newProducer(&mockBatchingClient{}, 10, 0, 10)
 
-	if b.running {
+	if b.isRunning() {
 		t.Error("b should not be running")
 	}
 
@@ -110,8 +111,72 @@ func TestStop(t *testing.T) {
 		t.Errorf("%v != nil", err)
 	}
 
-	if b.running {
+	if b.isRunning() {
 		t.Error("b should NOT be running")
+	}
+}
+
+func TestStartWhenStarted(t *testing.T) {
+	t.Parallel()
+	config := Config{
+		BufferSize:    100,
+		FlushInterval: 0,
+		BatchSize:     10,
+	}
+	b, err := New(&mockBatchingClient{}, "foo", config)
+	if err != nil {
+		t.Fatalf("%v != nil", err)
+	}
+
+	b.Start()
+	defer b.Stop()
+
+	err = b.Start()
+	if err == nil {
+		t.Errorf("%v == nil", err)
+	}
+}
+
+func TestStopWhenStopped(t *testing.T) {
+	t.Parallel()
+	config := Config{
+		BufferSize:    100,
+		FlushInterval: 0,
+		BatchSize:     10,
+	}
+	b, err := New(&mockBatchingClient{}, "foo", config)
+	if err != nil {
+		t.Fatalf("%v != nil", err)
+	}
+
+	err = b.Stop()
+	if err == nil {
+		t.Errorf("%v == nil", err)
+	}
+}
+
+func TestSuccessiveStartsAndStops(t *testing.T) {
+	t.Parallel()
+	config := Config{
+		BufferSize:    100,
+		FlushInterval: 0,
+		BatchSize:     10,
+	}
+	b, err := New(&mockBatchingClient{}, "foo", config)
+	if err != nil {
+		t.Fatalf("%v != nil", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		err = b.Start()
+		if err != nil {
+			t.Errorf("%v != nil", err)
+		}
+
+		err = b.Stop()
+		if err != nil {
+			t.Errorf("%v != nil", err)
+		}
 	}
 }
 
@@ -436,7 +501,7 @@ func TestSuccessfulRecordsStatWhenKinesisReturnsError(t *testing.T) {
 	defer b.Stop()
 
 	// Adding 20 **will** trigger a batch
-	b.addRecordsAndWait(20, 2)
+	b.addRecordsAndWait(20, 50)
 
 	if len(sr.stats) < 1 {
 		t.Fatalf("%v < 1", len(sr.stats))
@@ -653,13 +718,13 @@ func TestFlushWithTimeout(t *testing.T) {
 	b := newProducer(c, 1000, 0, 10)
 
 	// set running to true so Add will succeed
-	b.running = true
+	atomic.CompareAndSwapInt32(&b.running, 0, 1)
 
 	// Adding 600 will enqueue 2 batches
 	b.addRecordsAndWait(600, 0)
 
 	// back to normal
-	b.running = false
+	atomic.CompareAndSwapInt32(&b.running, 1, 0)
 
 	// This should lead to only 1 batch of 500 being sent by Flush
 	timeout := 5 * time.Millisecond
@@ -694,13 +759,13 @@ func TestFlushWithoutTimeout(t *testing.T) {
 	b := newProducer(c, 1000, 0, 10)
 
 	// set running to true so Add will succeed
-	b.running = true
+	atomic.CompareAndSwapInt32(&b.running, 0, 1)
 
 	// Adding 600 will enqueue 2 batches
 	b.addRecordsAndWait(600, 0)
 
 	// back to normal
-	b.running = false
+	atomic.CompareAndSwapInt32(&b.running, 1, 0)
 
 	// This should lead to batches of 500 and 100 being sent by Flush
 	timeout := 0 * time.Millisecond
@@ -761,24 +826,28 @@ func (s *mockBatchingClient) PutRecords(args *kinesis.RequestArgs) (resp *kinesi
 
 func newProducer(client *mockBatchingClient, bufferSize int, flushInterval time.Duration, batchSize int) *batchProducer {
 	config := Config{
-		BufferSize:           bufferSize,
-		FlushInterval:        flushInterval,
+		BufferSize: bufferSize,
+		// Set FlushInterval to an interval that will be acceptable to New; we’ll override it below
+		// after calling New.
+		FlushInterval:        50 * time.Millisecond,
 		BatchSize:            batchSize,
 		Logger:               discardLogger,
 		MaxAttemptsPerRecord: 2,
 	}
 
-	batchProducer := batchProducer{
-		client:      client,
-		streamName:  "foo",
-		config:      config,
-		logger:      config.Logger,
-		currentStat: new(StatsBatch),
-		records:     make(chan batchRecord, bufferSize),
-		stop:        make(chan interface{}),
+	producer, err := New(client, "foo", config)
+	if err != nil {
+		panic(err)
 	}
 
-	return &batchProducer
+	bp, ok := producer.(*batchProducer)
+	if !ok {
+		panic("producer is not a *batchProducer!")
+	}
+
+	bp.config.FlushInterval = flushInterval
+
+	return bp
 }
 
 // There are some cases wherein immediately after adding the records we want to sleep for some
