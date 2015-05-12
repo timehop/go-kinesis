@@ -155,9 +155,8 @@ func New(
 		logger:      config.Logger,
 		currentStat: new(StatsBatch),
 		records:     make(chan batchRecord, config.BufferSize),
+		start:       make(chan interface{}),
 		stop:        make(chan interface{}),
-		stopAck:     make(chan interface{}),
-		startAck:    make(chan interface{}),
 	}
 
 	return &batchProducer, nil
@@ -174,9 +173,11 @@ type batchProducer struct {
 	currentDelay      time.Duration
 	currentStat       *StatsBatch
 	records           chan batchRecord
-	stop              chan interface{}
-	stopAck           chan interface{}
-	startAck          chan interface{}
+
+	// start and stop will be unbuffered and will be used to send signals to start/stop and
+	// response signals that indicate that the respective operations have completed.
+	start chan interface{}
+	stop  chan interface{}
 }
 
 type batchRecord struct {
@@ -211,7 +212,7 @@ func (b *batchProducer) Start() error {
 	// We want run to run in the background (in a goroutine) but we don’t want to return until that
 	// goroutine has actually entered its main loop. So we read from this non-buffered channel, which
 	// will block until run writes a value to it.
-	<-b.startAck
+	<-b.start
 
 	b.running = true
 
@@ -231,7 +232,8 @@ func (b *batchProducer) run() {
 		defer statTicker.Stop()
 	}
 
-	b.startAck <- true
+	// used to signal Start that we are now running (entering the main loop)
+	b.start <- true
 
 	for {
 		select {
@@ -241,7 +243,7 @@ func (b *batchProducer) run() {
 			b.sendStats()
 		case <-b.stop:
 			b.sendStats()
-			b.stopAck <- true
+			b.stop <- true
 			return
 		default:
 			if len(b.records) >= b.config.BatchSize {
@@ -262,8 +264,11 @@ func (b *batchProducer) Stop() error {
 		return ErrAlreadyStopped
 	}
 
+	// request the main goroutine to stop
 	b.stop <- true
-	<-b.stopAck
+
+	// block until the main goroutine returns a value indicating that it has stopped
+	<-b.stop
 
 	b.running = false
 
