@@ -4,7 +4,7 @@ import (
 	"errors"
 	"log"
 	"os"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/timehop/go-kinesis"
@@ -168,7 +168,8 @@ type batchProducer struct {
 	streamName        string
 	config            Config
 	logger            *log.Logger
-	running           int32
+	running           bool
+	runningMu         sync.RWMutex
 	consecutiveErrors int
 	currentDelay      time.Duration
 	currentStat       *StatsBatch
@@ -198,7 +199,10 @@ func (b *batchProducer) Add(data []byte, partitionKey string) error {
 
 // from/for interface Producer
 func (b *batchProducer) Start() error {
-	if !atomic.CompareAndSwapInt32(&b.running, 0, 1) {
+	b.runningMu.Lock()
+	defer b.runningMu.Unlock()
+
+	if b.running {
 		return ErrAlreadyStarted
 	}
 
@@ -208,6 +212,8 @@ func (b *batchProducer) Start() error {
 	// goroutine has actually entered its main loop. So we read from this non-buffered channel, which
 	// will block until run writes a value to it.
 	<-b.startAck
+
+	b.running = true
 
 	return nil
 }
@@ -249,11 +255,18 @@ func (b *batchProducer) run() {
 
 // from/for interface Producer
 func (b *batchProducer) Stop() error {
-	if !atomic.CompareAndSwapInt32(&b.running, 1, 0) {
+	b.runningMu.Lock()
+	defer b.runningMu.Unlock()
+
+	if !b.running {
 		return ErrAlreadyStopped
 	}
+
 	b.stop <- true
 	<-b.stopAck
+
+	b.running = false
+
 	return nil
 }
 
@@ -289,7 +302,9 @@ loop:
 }
 
 func (b *batchProducer) isRunning() bool {
-	return atomic.LoadInt32(&b.running) == 1
+	b.runningMu.RLock()
+	defer b.runningMu.RUnlock()
+	return b.running
 }
 
 // Sends batches of records to Kinesis, possibly re-enqueing them if there are any errors or failed

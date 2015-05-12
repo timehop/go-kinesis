@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -718,13 +717,13 @@ func TestFlushWithTimeout(t *testing.T) {
 	b := newProducer(c, 1000, 0, 10)
 
 	// set running to true so Add will succeed
-	atomic.CompareAndSwapInt32(&b.running, 0, 1)
+	b.running = true
 
 	// Adding 600 will enqueue 2 batches
 	b.addRecordsAndWait(600, 0)
 
 	// back to normal
-	atomic.CompareAndSwapInt32(&b.running, 1, 0)
+	b.running = false
 
 	// This should lead to only 1 batch of 500 being sent by Flush
 	timeout := 5 * time.Millisecond
@@ -759,13 +758,13 @@ func TestFlushWithoutTimeout(t *testing.T) {
 	b := newProducer(c, 1000, 0, 10)
 
 	// set running to true so Add will succeed
-	atomic.CompareAndSwapInt32(&b.running, 0, 1)
+	b.running = true
 
 	// Adding 600 will enqueue 2 batches
 	b.addRecordsAndWait(600, 0)
 
 	// back to normal
-	atomic.CompareAndSwapInt32(&b.running, 1, 0)
+	b.running = false
 
 	// This should lead to batches of 500 and 100 being sent by Flush
 	timeout := 0 * time.Millisecond
