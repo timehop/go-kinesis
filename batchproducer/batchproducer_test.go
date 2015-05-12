@@ -73,6 +73,48 @@ func TestNewBatchProducerWithBadValues(t *testing.T) {
 	}
 }
 
+func TestStart(t *testing.T) {
+	t.Parallel()
+
+	b := newProducer(&mockBatchingClient{}, 10, 0, 10)
+
+	if b.running {
+		t.Error("b should not be running")
+	}
+
+	err := b.Start()
+	defer b.Stop()
+
+	if err != nil {
+		t.Errorf("%v != nil", err)
+	}
+
+	if !b.running {
+		t.Error("b should be running")
+	}
+}
+
+func TestStop(t *testing.T) {
+	t.Parallel()
+
+	b := newProducer(&mockBatchingClient{}, 10, 0, 10)
+
+	if b.running {
+		t.Error("b should not be running")
+	}
+
+	b.Start()
+	err := b.Stop()
+
+	if err != nil {
+		t.Errorf("%v != nil", err)
+	}
+
+	if b.running {
+		t.Error("b should NOT be running")
+	}
+}
+
 func TestAddRecordWhenStarted(t *testing.T) {
 	t.Parallel()
 	config := Config{
@@ -572,11 +614,124 @@ func TestAddBlocksTrue(t *testing.T) {
 	}
 }
 
+func TestFlush(t *testing.T) {
+	t.Parallel()
+
+	b := newProducer(&mockBatchingClient{}, 20, 0, 20)
+	b.Start()
+	defer b.Stop()
+
+	// Adding 10 will not trigger a batch
+	b.addRecordsAndWait(10, 2)
+
+	timeout := 20 * time.Second
+	sent, remaining, err := b.Flush(timeout, false)
+	if err != nil {
+		t.Errorf("%s != nil", err)
+	}
+
+	if sent != 10 {
+		t.Errorf("%v != 10", sent)
+	}
+	if remaining > 0 {
+		t.Errorf("%v > 0", remaining)
+	}
+	if len(b.records) > 0 {
+		t.Errorf("%v > 0", len(b.records))
+	}
+	if b.isRunning() {
+		t.Errorf("b.running != false")
+	}
+}
+
+func TestFlushWithTimeout(t *testing.T) {
+	t.Parallel()
+
+	c := &mockBatchingClient{
+		sleepFor: 6 * time.Millisecond,
+	}
+	b := newProducer(c, 1000, 0, 10)
+
+	// set running to true so Add will succeed
+	b.running = true
+
+	// Adding 600 will enqueue 2 batches
+	b.addRecordsAndWait(600, 0)
+
+	// back to normal
+	b.running = false
+
+	// This should lead to only 1 batch of 500 being sent by Flush
+	timeout := 5 * time.Millisecond
+
+	start := time.Now()
+	sent, remaining, err := b.Flush(timeout, false)
+	duration := time.Since(start)
+	if err != nil {
+		t.Errorf("%s != nil", err)
+	}
+
+	if sent != 500 {
+		t.Errorf("%v != 500", sent)
+	}
+	if remaining != 100 {
+		t.Errorf("%v != 100", remaining)
+	}
+	if len(b.records) != 100 {
+		t.Errorf("%v != 100", len(b.records))
+	}
+	if duration < 6*time.Millisecond || duration > 8*time.Millisecond {
+		t.Errorf("%v seems off", duration)
+	}
+}
+
+func TestFlushWithoutTimeout(t *testing.T) {
+	t.Parallel()
+
+	c := &mockBatchingClient{
+		sleepFor: 6 * time.Millisecond,
+	}
+	b := newProducer(c, 1000, 0, 10)
+
+	// set running to true so Add will succeed
+	b.running = true
+
+	// Adding 600 will enqueue 2 batches
+	b.addRecordsAndWait(600, 0)
+
+	// back to normal
+	b.running = false
+
+	// This should lead to batches of 500 and 100 being sent by Flush
+	timeout := 0 * time.Millisecond
+
+	start := time.Now()
+	sent, remaining, err := b.Flush(timeout, false)
+	duration := time.Since(start)
+	if err != nil {
+		t.Errorf("%s != nil", err)
+	}
+
+	if sent != 600 {
+		t.Errorf("%v != 600", sent)
+	}
+	if remaining != 0 {
+		t.Errorf("%v != 0", remaining)
+	}
+	if len(b.records) != 0 {
+		t.Errorf("%v != 0", len(b.records))
+	}
+	if duration < 12*time.Millisecond || duration > 16*time.Millisecond {
+		t.Errorf("%v seems off", duration)
+	}
+}
+
 type mockBatchingClient struct {
 	calls     int
 	callsMu   sync.Mutex
 	shouldErr bool
 	numToFail int
+	sleepFor  time.Duration
 }
 
 func (s *mockBatchingClient) PutRecords(args *kinesis.RequestArgs) (resp *kinesis.PutRecordsResp, err error) {
@@ -587,6 +742,8 @@ func (s *mockBatchingClient) PutRecords(args *kinesis.RequestArgs) (resp *kinesi
 	if s.shouldErr {
 		return nil, errors.New("Oh Noes!")
 	}
+
+	time.Sleep(s.sleepFor)
 
 	res := kinesis.PutRecordsResp{Records: make([]kinesis.PutRecordsRespRecord, len(args.Records))}
 
