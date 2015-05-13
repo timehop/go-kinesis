@@ -119,6 +119,14 @@ var DefaultConfig = Config{
 	Logger:                  log.New(os.Stderr, "", log.LstdFlags),
 }
 
+var (
+	// ErrAlreadyStarted is returned by Start if the Producer is already started.
+	ErrAlreadyStarted = errors.New("already started")
+
+	// ErrAlreadyStopped is returned by Stop if the Producer is already stopped.
+	ErrAlreadyStopped = errors.New("already stopped")
+)
+
 // New creates and returns a BatchProducer that will do nothing until its Start method is called.
 // Once it is started, it will flush a batch to Kinesis whenever either
 // the flushInterval occurs (if flushInterval > 0) or the batchSize is reached,
@@ -147,6 +155,7 @@ func New(
 		logger:      config.Logger,
 		currentStat: new(StatsBatch),
 		records:     make(chan batchRecord, config.BufferSize),
+		start:       make(chan interface{}),
 		stop:        make(chan interface{}),
 	}
 
@@ -159,12 +168,16 @@ type batchProducer struct {
 	config            Config
 	logger            *log.Logger
 	running           bool
-	runningMu         sync.Mutex
+	runningMu         sync.RWMutex
 	consecutiveErrors int
 	currentDelay      time.Duration
 	currentStat       *StatsBatch
 	records           chan batchRecord
-	stop              chan interface{}
+
+	// start and stop will be unbuffered and will be used to send signals to start/stop and
+	// response signals that indicate that the respective operations have completed.
+	start chan interface{}
+	stop  chan interface{}
 }
 
 type batchRecord struct {
@@ -187,15 +200,21 @@ func (b *batchProducer) Add(data []byte, partitionKey string) error {
 
 // from/for interface Producer
 func (b *batchProducer) Start() error {
-	if b.isRunning() {
-		return nil
+	b.runningMu.Lock()
+	defer b.runningMu.Unlock()
+
+	if b.running {
+		return ErrAlreadyStarted
 	}
 
 	go b.run()
 
-	for !b.isRunning() {
-		time.Sleep(1 * time.Millisecond)
-	}
+	// We want run to run in the background (in a goroutine) but we don’t want to return until that
+	// goroutine has actually entered its main loop. So we read from this non-buffered channel, which
+	// will block until run writes a value to it.
+	<-b.start
+
+	b.running = true
 
 	return nil
 }
@@ -213,8 +232,8 @@ func (b *batchProducer) run() {
 		defer statTicker.Stop()
 	}
 
-	b.setRunning(true)
-	defer b.setRunning(false)
+	// used to signal Start that we are now running (entering the main loop)
+	b.start <- true
 
 	for {
 		select {
@@ -224,6 +243,7 @@ func (b *batchProducer) run() {
 			b.sendStats()
 		case <-b.stop:
 			b.sendStats()
+			b.stop <- true
 			return
 		default:
 			if len(b.records) >= b.config.BatchSize {
@@ -237,9 +257,21 @@ func (b *batchProducer) run() {
 
 // from/for interface Producer
 func (b *batchProducer) Stop() error {
-	if b.isRunning() {
-		b.stop <- true
+	b.runningMu.Lock()
+	defer b.runningMu.Unlock()
+
+	if !b.running {
+		return ErrAlreadyStopped
 	}
+
+	// request the main goroutine to stop
+	b.stop <- true
+
+	// block until the main goroutine returns a value indicating that it has stopped
+	<-b.stop
+
+	b.running = false
+
 	return nil
 }
 
@@ -274,15 +306,9 @@ loop:
 	return sent, len(b.records), nil
 }
 
-func (b *batchProducer) setRunning(running bool) {
-	b.runningMu.Lock()
-	defer b.runningMu.Unlock()
-	b.running = running
-}
-
 func (b *batchProducer) isRunning() bool {
-	b.runningMu.Lock()
-	defer b.runningMu.Unlock()
+	b.runningMu.RLock()
+	defer b.runningMu.RUnlock()
 	return b.running
 }
 
