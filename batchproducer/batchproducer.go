@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/timehop/go-kinesis"
+	"github.com/sendgridlabs/go-kinesis"
 )
 
 // MaxKinesisBatchSize is the maximum number of records that Kinesis accepts in a request
@@ -344,6 +344,7 @@ func (b *batchProducer) sendBatch(batchSize int) int {
 			b.logger.Printf("DROPPING %v records because buffer is full or nearly full and there have been %v consecutive errors from Kinesis", len(records), b.consecutiveErrors)
 		} else {
 			b.logger.Printf("Returning %v records to buffer (%v consecutive errors)", len(records), b.consecutiveErrors)
+
 			// returnRecordsToBuffer can block if the buffer (channel) if full so we’ll
 			// call it in a goroutine. This might be problematic WRT ordering. TODO: revisit this.
 			go b.returnRecordsToBuffer(records)

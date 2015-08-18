@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/timehop/go-kinesis"
+	"github.com/sendgridlabs/go-kinesis"
 )
 
 var (
@@ -298,7 +298,7 @@ func TestBatchError(t *testing.T) {
 	b.Start()
 	defer b.Stop()
 
-	b.addRecordsAndWait(5, 1)
+	b.addRecordsAndWait(5, 5)
 	if b.consecutiveErrors != 1 {
 		t.Errorf("%v != 1", b.consecutiveErrors)
 	}
@@ -344,20 +344,20 @@ func TestBatchPartialFailure(t *testing.T) {
 	b.Start()
 	defer b.Stop()
 
-	b.addRecordsAndWait(19, 0)
+	b.addRecordsAndWait(19, 5)
 
 	// Add a single record that will fail. partitionKey is (mis)used to specify that the record
 	// should fail.
 	b.Add([]byte("foo"), "fail")
 
 	// First attempt
-	time.Sleep(1 * time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
 	if len(b.records) != 1 {
 		t.Errorf("%v != 1", len(b.records))
 	}
 
 	// Second attempt
-	b.addRecordsAndWait(19, 1)
+	b.addRecordsAndWait(19, 5)
 	// The failing record should be thrown away at this point
 	if len(b.records) != 0 {
 		t.Errorf("%v != 0", len(b.records))
@@ -448,7 +448,7 @@ func TestSuccessfulRecordsStatWhenSomeRecordsFail(t *testing.T) {
 	b.Start()
 	defer b.Stop()
 
-	b.addRecordsAndWait(19, 0)
+	b.addRecordsAndWait(19, 5)
 
 	// Add a single record that will fail. partitionKey is (mis)used to specify that the record
 	// should fail.
@@ -545,7 +545,7 @@ func TestKinesisErrorsStatWhenKinesisReturnsError(t *testing.T) {
 	b.Start()
 	defer b.Stop()
 
-	b.addRecordsAndWait(20, 1)
+	b.addRecordsAndWait(20, 5)
 	b.Stop()
 
 	if sr.totalKinesisErrorsSinceLastStat != 2 {
