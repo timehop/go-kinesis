@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sendgridlabs/go-kinesis"
+	"github.com/timehop/go-kinesis"
 )
 
 var (
