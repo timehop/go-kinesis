@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 )
@@ -133,7 +133,7 @@ type jsonErrors struct {
 func buildError(r *http.Response) error {
 	// Reading the body into a []byte because we might need to put it into an error
 	// message after having the JSON decoding fail to produce a message.
-	body, ioerr := ioutil.ReadAll(r.Body)
+	body, ioerr := io.ReadAll(r.Body)
 	if ioerr != nil {
 		return fmt.Errorf("Could not read response body: %s", ioerr)
 	}

@@ -3,7 +3,7 @@ package batchproducer
 import (
 	"bytes"
 	"errors"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	discardLogger = log.New(ioutil.Discard, "", 0)
+	discardLogger = log.New(io.Discard, "", 0)
 	stdoutLogger  = log.New(os.Stdout, "", 0)
 )
 

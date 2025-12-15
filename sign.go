@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path"
@@ -128,11 +127,11 @@ func (s *Service) writeHeaderList(w io.Writer, r *http.Request) {
 }
 
 func (s *Service) writeBody(w io.Writer, r *http.Request) {
-	b, err := ioutil.ReadAll(r.Body)
+	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		panic(err)
 	}
-	r.Body = ioutil.NopCloser(bytes.NewBuffer(b))
+	r.Body = io.NopCloser(bytes.NewBuffer(b))
 
 	h := sha256.New()
 	h.Write(b)
