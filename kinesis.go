@@ -1,4 +1,4 @@
-// Package kinesis provide GOlang API for http://aws.amazon.com/kinesis/
+// Package kinesis provide Golang API for http://aws.amazon.com/kinesis/
 package kinesis
 
 import (
@@ -27,7 +27,7 @@ const (
 	kinesisURL = "https://kinesis.%s.amazonaws.com"
 )
 
-// NewRegionFromEnv creates a region from the an expected environment variable
+// NewRegionFromEnv creates a region from the expected environment variable
 func NewRegionFromEnv() string {
 	return os.Getenv(RegionEnvName)
 }
@@ -138,12 +138,12 @@ func buildError(r *http.Response) error {
 		return fmt.Errorf("Could not read response body: %s", ioerr)
 	}
 
-	errors := jsonErrors{}
-	json.NewDecoder(bytes.NewReader(body)).Decode(&errors)
+	errs := jsonErrors{}
+	_ = json.NewDecoder(bytes.NewReader(body)).Decode(&errs)
 
 	var err Error
-	err.Message = errors.Message
-	err.Code = errors.Code
+	err.Message = errs.Message
+	err.Code = errs.Code
 	err.StatusCode = r.StatusCode
 	if err.Message == "" {
 		err.Message = fmt.Sprintf("%s: %s", r.Status, body)

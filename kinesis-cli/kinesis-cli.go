@@ -52,7 +52,7 @@ func create(args []string) {
 	}
 }
 
-func delete(args []string) {
+func deleteStream(args []string) {
 	streamName := getArg(args, 0, "stream name", nil)
 	if !confirm("delete stream '" + streamName + "'") {
 		fmt.Println("Delete canceled.")
@@ -130,7 +130,7 @@ func main() {
 	case "create":
 		create(os.Args[2:])
 	case "delete":
-		delete(os.Args[2:])
+		deleteStream(os.Args[2:])
 	case "describe":
 		describe(os.Args[2:])
 	case "split":
