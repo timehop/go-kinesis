@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -20,6 +20,8 @@ const (
 	AWSMetadataServer = "169.254.169.254"
 	AWSIAMCredsPath   = "/latest/meta-data/iam/security-credentials"
 	AWSIAMCredsURL    = "http://" + AWSMetadataServer + "/" + AWSIAMCredsPath
+	AWSTokenURL       = "http://" + AWSMetadataServer + "/latest/api/token"
+	AWSTokenTTL       = "21600" // 6 hours
 )
 
 // Auth interface for authentication credentials and information
@@ -66,10 +68,10 @@ func NewAuthFromEnv() (*AuthCredentials, error) {
 	}
 
 	if accessKey == "" {
-		return nil, fmt.Errorf("Unable to retrieve access key from %s or %s env variables", AccessEnvKey, AccessEnvKeyId)
+		return nil, fmt.Errorf("unable to retrieve access key from %s or %s env variables", AccessEnvKey, AccessEnvKeyId)
 	}
 	if secretKey == "" {
-		return nil, fmt.Errorf("Unable to retrieve secret key from %s or %s env variables", SecretEnvKey, SecretEnvAccessKey)
+		return nil, fmt.Errorf("unable to retrieve secret key from %s or %s env variables", SecretEnvKey, SecretEnvAccessKey)
 	}
 
 	return NewAuth(accessKey, secretKey), nil
@@ -114,14 +116,21 @@ func (a *AuthCredentials) GetAccessKey() string {
 	return a.accessKey
 }
 
-// Renew retrieves a new token and mutates it on an instance of the Auth struct
+// Renew retrieves a new token and mutates it on an instance of the Auth struct.
+// Uses IMDSv2 (session-based) to fetch credentials from the EC2 metadata service.
 func (a *AuthCredentials) Renew() error {
-	role, err := retrieveIAMRole()
+	// Get IMDSv2 session token
+	imdsToken, err := getIMDSv2Token()
+	if err != nil {
+		return fmt.Errorf("failed to get IMDSv2 token: %w", err)
+	}
+
+	role, err := retrieveIAMRole(imdsToken)
 	if err != nil {
 		return err
 	}
 
-	data, err := retrieveAWSCredentials(role)
+	data, err := retrieveAWSCredentials(role, imdsToken)
 	if err != nil {
 		return err
 	}
@@ -148,16 +157,55 @@ func (a *AuthCredentials) Sign(s *Service, t time.Time) []byte {
 	return h
 }
 
-func retrieveAWSCredentials(role string) (map[string]string, error) {
+// getIMDSv2Token retrieves a session token for IMDSv2.
+// IMDSv2 requires a token obtained via PUT request before accessing metadata.
+func getIMDSv2Token() (string, error) {
+	req, err := http.NewRequest(http.MethodPut, AWSTokenURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-aws-ec2-metadata-token-ttl-seconds", AWSTokenTTL)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to get IMDSv2 token: status %d", resp.StatusCode)
+	}
+
+	token, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(token), nil
+}
+
+func retrieveAWSCredentials(role, token string) (map[string]string, error) {
 	var bodybytes []byte
-	// Retrieve the json for this role
-	resp, err := http.Get(fmt.Sprintf("%s/%s", AWSIAMCredsURL, role))
-	if err != nil || resp.StatusCode != http.StatusOK {
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/%s", AWSIAMCredsURL, role), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-aws-ec2-metadata-token", token)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	bodybytes, err = ioutil.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to retrieve credentials: status %d", resp.StatusCode)
+	}
+
+	bodybytes, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -171,16 +219,27 @@ func retrieveAWSCredentials(role string) (map[string]string, error) {
 	return jsondata, nil
 }
 
-func retrieveIAMRole() (string, error) {
+func retrieveIAMRole(token string) (string, error) {
 	var bodybytes []byte
 
-	resp, err := http.Get(AWSIAMCredsURL)
-	if err != nil || resp.StatusCode != http.StatusOK {
+	req, err := http.NewRequest(http.MethodGet, AWSIAMCredsURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-aws-ec2-metadata-token", token)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	bodybytes, err = ioutil.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to retrieve IAM role: status %d", resp.StatusCode)
+	}
+
+	bodybytes, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -188,7 +247,7 @@ func retrieveIAMRole() (string, error) {
 	// pick the first IAM role
 	role := strings.Split(string(bodybytes), "\n")[0]
 	if len(role) == 0 {
-		return "", errors.New("Unable to retrieve IAM role")
+		return "", errors.New("unable to retrieve IAM role")
 	}
 
 	return role, nil
